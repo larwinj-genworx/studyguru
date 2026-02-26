@@ -17,7 +17,16 @@ from .models import (
     SubjectCreate,
     SubjectResponse,
 )
-from .services.job_service import material_job_service
+from .operations.material_job_operations import (
+    approve_job,
+    create_admin_job,
+    get_job_artifact_path,
+    get_job_concept_artifact_path,
+    get_job_status,
+    get_published_concept_artifact_path,
+    get_published_subject_artifact_path,
+    regenerate_job,
+)
 from .store import store
 
 router = APIRouter(tags=["study-material"])
@@ -68,7 +77,7 @@ async def list_admin_subject_materials(subject_id: str) -> list[ConceptMaterialR
     dependencies=[Depends(require_role("admin"))],
 )
 async def create_admin_material_job(payload: AdminMaterialJobCreate) -> MaterialJobStatusResponse:
-    return await material_job_service.create_admin_job(payload)
+    return await create_admin_job(payload)
 
 
 @router.get(
@@ -77,7 +86,7 @@ async def create_admin_material_job(payload: AdminMaterialJobCreate) -> Material
     dependencies=[Depends(require_role("admin"))],
 )
 async def get_admin_material_job_status(job_id: str) -> MaterialJobStatusResponse:
-    return material_job_service.get_job_status(job_id)
+    return get_job_status(job_id)
 
 
 @router.post(
@@ -90,7 +99,7 @@ async def regenerate_material_job(
     job_id: str,
     payload: AdminMaterialRegenerateRequest,
 ) -> MaterialJobStatusResponse:
-    return await material_job_service.regenerate_job(job_id, payload)
+    return await regenerate_job(job_id, payload)
 
 
 @router.post(
@@ -102,7 +111,7 @@ async def approve_material_job(
     job_id: str,
     payload: AdminMaterialApproveRequest,
 ) -> MaterialJobStatusResponse:
-    return material_job_service.approve_job(job_id, payload)
+    return approve_job(job_id, payload)
 
 
 @router.get(
@@ -110,7 +119,7 @@ async def approve_material_job(
     dependencies=[Depends(require_role("admin"))],
 )
 async def download_admin_job_zip(job_id: str) -> FileResponse:
-    zip_path = material_job_service.get_job_artifact_path(job_id=job_id, artifact_name="zip")
+    zip_path = get_job_artifact_path(job_id=job_id, artifact_name="zip")
     return FileResponse(path=str(zip_path), filename=zip_path.name, media_type="application/zip")
 
 
@@ -119,7 +128,7 @@ async def download_admin_job_zip(job_id: str) -> FileResponse:
     dependencies=[Depends(require_role("admin"))],
 )
 async def download_admin_job_artifact(job_id: str, artifact_name: str) -> FileResponse:
-    artifact_path = material_job_service.get_job_artifact_path(job_id=job_id, artifact_name=artifact_name)
+    artifact_path = get_job_artifact_path(job_id=job_id, artifact_name=artifact_name)
     return FileResponse(path=str(artifact_path), filename=artifact_path.name)
 
 
@@ -128,7 +137,7 @@ async def download_admin_job_artifact(job_id: str, artifact_name: str) -> FileRe
     dependencies=[Depends(require_role("admin"))],
 )
 async def download_admin_concept_artifact(job_id: str, concept_id: str, artifact_name: str) -> FileResponse:
-    artifact_path = material_job_service.get_job_concept_artifact_path(
+    artifact_path = get_job_concept_artifact_path(
         job_id=job_id,
         concept_id=concept_id,
         artifact_name=artifact_name,
@@ -200,9 +209,21 @@ async def query_selected_concept_materials(
     dependencies=[Depends(require_role("student"))],
 )
 async def download_student_concept_artifact(subject_id: str, concept_id: str, artifact_name: str) -> FileResponse:
-    artifact_path = material_job_service.get_published_concept_artifact_path(
+    artifact_path = get_published_concept_artifact_path(
         subject_id=subject_id,
         concept_id=concept_id,
+        artifact_name=artifact_name,
+    )
+    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+
+
+@router.get(
+    "/student/subjects/{subject_id}/artifacts/{artifact_name}",
+    dependencies=[Depends(require_role("student"))],
+)
+async def download_student_subject_artifact(subject_id: str, artifact_name: str) -> FileResponse:
+    artifact_path = get_published_subject_artifact_path(
+        subject_id=subject_id,
         artifact_name=artifact_name,
     )
     return FileResponse(path=str(artifact_path), filename=artifact_path.name)

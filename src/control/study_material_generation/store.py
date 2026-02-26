@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from .config import get_settings
 from .models import (
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
@@ -24,10 +28,13 @@ from .models import (
 
 
 class InMemoryStore:
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Path | None = None) -> None:
         self._lock = Lock()
         self._subjects: dict[str, SubjectRecord] = {}
         self._jobs: dict[str, JobRecord] = {}
+        self._persist_path = persist_path
+        self._logger = logging.getLogger("uvicorn.error")
+        self._load()
 
     # ----- Subject / Concept -----
     def create_subject(self, payload: SubjectCreate) -> SubjectResponse:
@@ -39,6 +46,7 @@ class InMemoryStore:
                 description=payload.description,
             )
             self._subjects[subject.subject_id] = subject
+            self._persist()
             return self._to_subject_response(subject)
 
     def add_concepts_bulk(self, subject_id: str, payload: ConceptBulkCreate) -> SubjectResponse:
@@ -53,6 +61,7 @@ class InMemoryStore:
                     created_at=utc_now(),
                 )
             subject.updated_at = utc_now()
+            self._persist()
             return self._to_subject_response(subject)
 
     def publish_subject(self, subject_id: str) -> SubjectResponse:
@@ -91,6 +100,7 @@ class InMemoryStore:
                 concept_meta.material_status = MaterialLifecycleStatus.published
                 concept_meta.material_version = material.version
             subject.updated_at = publish_time
+            self._persist()
             return self._to_subject_response(subject)
 
     def get_subject(self, subject_id: str) -> SubjectResponse:
@@ -171,6 +181,7 @@ class InMemoryStore:
                 concept_statuses={concept_id: "queued" for concept_id in concept_ids},
             )
             self._jobs[job.job_id] = job
+            self._persist()
             return job.model_copy(deep=True)
 
     def get_job(self, job_id: str) -> JobRecord:
@@ -186,6 +197,7 @@ class InMemoryStore:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
             job.touch()
             self._jobs[job.job_id] = job
+            self._persist()
 
     def approve_job(self, job_id: str, payload: AdminMaterialApproveRequest) -> JobRecord:
         with self._lock:
@@ -238,6 +250,7 @@ class InMemoryStore:
             subject.updated_at = approve_time
             self._jobs[job.job_id] = job
             self._subjects[subject.subject_id] = subject
+            self._persist()
             return job.model_copy(deep=True)
 
     def get_published_concept_material(self, subject_id: str, concept_id: str) -> ConceptMaterialRecord:
@@ -262,6 +275,45 @@ class InMemoryStore:
         if not subject:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
         return subject
+
+    def _load(self) -> None:
+        if not self._persist_path or not self._persist_path.exists():
+            return
+        try:
+            raw = self._persist_path.read_text(encoding="utf-8")
+            if not raw.strip():
+                return
+            payload = json.loads(raw)
+            subjects = payload.get("subjects", {}) if isinstance(payload, dict) else {}
+            jobs = payload.get("jobs", {}) if isinstance(payload, dict) else {}
+            for subject_id, data in subjects.items():
+                try:
+                    self._subjects[subject_id] = SubjectRecord.model_validate(data)
+                except Exception as exc:
+                    self._logger.warning("[Store] Failed to load subject %s: %s", subject_id, exc)
+            for job_id, data in jobs.items():
+                try:
+                    self._jobs[job_id] = JobRecord.model_validate(data)
+                except Exception as exc:
+                    self._logger.warning("[Store] Failed to load job %s: %s", job_id, exc)
+        except Exception as exc:
+            self._logger.warning("[Store] Failed to load persisted store: %s", exc)
+
+    def _persist(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "subjects": {
+                    subject_id: subject.model_dump(mode="json")
+                    for subject_id, subject in self._subjects.items()
+                },
+                "jobs": {job_id: job.model_dump(mode="json") for job_id, job in self._jobs.items()},
+            }
+            self._persist_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self._logger.warning("[Store] Failed to persist store: %s", exc)
 
     def _to_subject_response(self, subject: SubjectRecord) -> SubjectResponse:
         concepts = [concept.model_copy(deep=True) for concept in subject.concept_meta.values()]
@@ -291,4 +343,5 @@ class InMemoryStore:
         )
 
 
-store = InMemoryStore()
+_settings = get_settings()
+store = InMemoryStore(persist_path=_settings.material_output_dir / "store.json")

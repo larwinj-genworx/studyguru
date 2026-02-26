@@ -1,0 +1,11 @@
+﻿__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+ENV/
+.env
+.env.*
+*.sqlite3
+Temp/agentic_material/output/
+output/
