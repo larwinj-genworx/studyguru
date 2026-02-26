@@ -40,6 +40,8 @@ Thumbs.db
 # Local runtime / temp outputs
 Temp/agentic_material/output/
 Temp/**/__pycache__/
+src/control/study_material_generation/output/
+output/study_material/
 
 # FastAPI / Uvicorn reload artifacts
 *.pid
