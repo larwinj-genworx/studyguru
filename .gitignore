@@ -1,0 +1,48 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment and secrets
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage and test reports
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs
+*.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local runtime / temp outputs
+Temp/agentic_material/output/
+Temp/**/__pycache__/
+
+# FastAPI / Uvicorn reload artifacts
+*.pid
+
+# Misc
+*.sqlite3

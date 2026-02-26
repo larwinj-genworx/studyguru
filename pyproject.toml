@@ -1,0 +1,26 @@
+[project]
+name = "studyguru"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiofiles>=24.1.0",
+    "beautifulsoup4>=4.14.3",
+    "crewai>=0.141.0",
+    "ddgs>=9.6.1",
+    "duckduckgo-search>=8.1.1",
+    "fastapi>=0.131.0",
+    "httpx>=0.28.1",
+    "langchain-groq>=0.3.8",
+    "langgraph>=0.6.7",
+    "lxml>=6.0.2",
+    "pydantic-settings>=2.11.0",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+    "reportlab>=4.4.4",
+    "requests>=2.32.5",
+    "scikit-learn>=1.8.0",
+    "tenacity>=9.1.2",
+    "uvicorn>=0.41.0",
+]
