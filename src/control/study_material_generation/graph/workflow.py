@@ -12,10 +12,8 @@ from ..agents import AgentRegistry
 from ..agents.resource_finder_agent import ResourceUnavailableError
 from ..config import Settings
 from ..models import ArtifactIndex, ConceptContentPack, JobStatus
-from ..renderers.docx_renderer import DocxRenderer
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
-from ..renderers.pptx_renderer import PptxRenderer
 from ..store import InMemoryStore
 
 logger = logging.getLogger("uvicorn.error")
@@ -27,16 +25,12 @@ class MaterialWorkflow:
         store: InMemoryStore,
         settings: Settings,
         agents: AgentRegistry,
-        pptx_renderer: PptxRenderer,
-        docx_renderer: DocxRenderer,
         pdf_renderer: PdfRenderer,
         json_renderer: JsonRenderer,
     ) -> None:
         self.store = store
         self.settings = settings
         self.agents = agents
-        self.pptx_renderer = pptx_renderer
-        self.docx_renderer = docx_renderer
         self.pdf_renderer = pdf_renderer
         self.json_renderer = json_renderer
         self._graph = self._build_graph()
@@ -227,6 +221,7 @@ class MaterialWorkflow:
                 concept_name=item["concept_name"],
                 key_steps=core.get("key_steps", []),
                 revision_feedback=item.get("revision_feedback"),
+                practical_examples_required=bool(core.get("practical_examples_required", True)),
             )
             return item
 
@@ -440,19 +435,13 @@ class MaterialWorkflow:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Aggregate artifacts for admin review bundle.
-        pptx_path = self.pptx_renderer.render(
-            output_dir=output_dir,
-            subject_name=subject["name"],
-            grade_level=subject["grade_level"],
-            concept_packs=concept_packs,
-        )
-        docx_path = self.docx_renderer.render(
-            output_dir=output_dir,
-            subject_name=subject["name"],
-            grade_level=subject["grade_level"],
-            concept_packs=concept_packs,
-        )
         pdf_path = self.pdf_renderer.render(
+            output_dir=output_dir,
+            subject_name=subject["name"],
+            grade_level=subject["grade_level"],
+            concept_packs=concept_packs,
+        )
+        quick_pdf_path = self.pdf_renderer.render_quick_revision(
             output_dir=output_dir,
             subject_name=subject["name"],
             grade_level=subject["grade_level"],
@@ -466,19 +455,13 @@ class MaterialWorkflow:
         for pack in concept_packs:
             concept_dir = concepts_root / pack.concept_id
             concept_dir.mkdir(parents=True, exist_ok=True)
-            c_pptx = self.pptx_renderer.render(
-                output_dir=concept_dir,
-                subject_name=subject["name"],
-                grade_level=subject["grade_level"],
-                concept_packs=[pack],
-            )
-            c_docx = self.docx_renderer.render(
-                output_dir=concept_dir,
-                subject_name=subject["name"],
-                grade_level=subject["grade_level"],
-                concept_packs=[pack],
-            )
             c_pdf = self.pdf_renderer.render(
+                output_dir=concept_dir,
+                subject_name=subject["name"],
+                grade_level=subject["grade_level"],
+                concept_packs=[pack],
+            )
+            c_quick_pdf = self.pdf_renderer.render_quick_revision(
                 output_dir=concept_dir,
                 subject_name=subject["name"],
                 grade_level=subject["grade_level"],
@@ -486,9 +469,8 @@ class MaterialWorkflow:
             )
             c_json = self.json_renderer.render(output_dir=concept_dir, concept_packs=[pack])
             concept_artifacts[pack.concept_id] = {
-                "pptx": str(c_pptx),
-                "docx": str(c_docx),
                 "pdf": str(c_pdf),
+                "quick_revision_pdf": str(c_quick_pdf),
                 **{name: str(path) for name, path in c_json.items()},
             }
 
@@ -500,9 +482,8 @@ class MaterialWorkflow:
             "concept_packs": state.get("concept_packs", []),
             "output_dir": str(output_dir),
             "artifacts": {
-                "pptx": str(pptx_path),
-                "docx": str(docx_path),
                 "pdf": str(pdf_path),
+                "quick_revision_pdf": str(quick_pdf_path),
                 **{name: str(path) for name, path in json_paths.items()},
             },
             "concept_artifacts": concept_artifacts,
@@ -550,9 +531,8 @@ class MaterialWorkflow:
         }
 
         job.artifact_index = ArtifactIndex(
-            pptx=artifacts.get("pptx"),
-            docx=artifacts.get("docx"),
             pdf=artifacts.get("pdf"),
+            quick_revision_pdf=artifacts.get("quick_revision_pdf"),
             quiz_json=artifacts.get("quiz_json"),
             flashcards_json=artifacts.get("flashcards_json"),
             resources_json=artifacts.get("resources_json"),
@@ -560,9 +540,8 @@ class MaterialWorkflow:
         )
         job.concept_artifacts = {
             concept_id: ArtifactIndex(
-                pptx=artifact_map.get("pptx"),
-                docx=artifact_map.get("docx"),
                 pdf=artifact_map.get("pdf"),
+                quick_revision_pdf=artifact_map.get("quick_revision_pdf"),
                 quiz_json=artifact_map.get("quiz_json"),
                 flashcards_json=artifact_map.get("flashcards_json"),
                 resources_json=artifact_map.get("resources_json"),

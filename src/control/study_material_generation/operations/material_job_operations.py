@@ -18,18 +18,15 @@ from ..models import (
     MaterialJobStatusResponse,
     MaterialLifecycleStatus,
 )
-from ..renderers.docx_renderer import DocxRenderer
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
-from ..renderers.pptx_renderer import PptxRenderer
 from ..store import store
 
 logger = logging.getLogger("uvicorn.error")
 
 _ALLOWED_ARTIFACTS = {
-    "pptx",
-    "docx",
     "pdf",
+    "quick_revision_pdf",
     "quiz_json",
     "flashcards_json",
     "resources_json",
@@ -48,8 +45,6 @@ def _ensure_workflow() -> MaterialWorkflow:
         store=store,
         settings=_settings,
         agents=build_agent_registry(_settings),
-        pptx_renderer=PptxRenderer(),
-        docx_renderer=DocxRenderer(),
         pdf_renderer=PdfRenderer(),
         json_renderer=JsonRenderer(),
     )

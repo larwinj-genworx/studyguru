@@ -31,10 +31,14 @@ class QualityGuardianAgent(BaseStructuredAgent):
         data = self.run_json_task(prompt) or {}
 
         issues: list[str] = []
-        if len(str(content.get("definition", "")).split()) > 80:
+        definition_word_count = len(str(content.get("definition", "")).split())
+        if definition_word_count < 55:
+            issues.append("Definition is too short.")
+        if definition_word_count > 150:
             issues.append("Definition is too long.")
-        if len(content.get("examples", [])) < 3:
-            issues.append("Need at least 3 worked examples.")
+        practical_required = bool(content.get("practical_examples_required", True))
+        if practical_required and len(content.get("examples", [])) < 3:
+            issues.append("Need at least 3 practical examples.")
         if len(content.get("mcqs", [])) < 6:
             issues.append("Need at least 6 MCQs.")
         if len(content.get("flashcards", [])) < 8:

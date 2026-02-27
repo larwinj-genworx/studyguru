@@ -67,9 +67,8 @@ class StudentConceptSelection(BaseModel):
 
 
 class ArtifactIndex(BaseModel):
-    pptx: str | None = None
-    docx: str | None = None
     pdf: str | None = None
+    quick_revision_pdf: str | None = None
     quiz_json: str | None = None
     flashcards_json: str | None = None
     resources_json: str | None = None
@@ -130,6 +129,7 @@ class ConceptContentPack(BaseModel):
     concept_name: str
     definition: str
     intuition: str
+    formulas: list[str] = Field(default_factory=list)
     key_steps: list[str]
     common_mistakes: list[str]
     examples: list[str]

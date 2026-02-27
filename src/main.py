@@ -24,7 +24,6 @@ app.add_middleware(
 
 app.include_router(api_routers)
 
-
 @app.get("/", tags=["meta"])
 async def root() -> dict[str, str]:
     return {"service": "StudyGuru API", "status": "running"}

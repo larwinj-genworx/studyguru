@@ -31,7 +31,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             f"Concept ID: {concept_id}\n"
             f"Concept: {concept_name}\n"
             f"Content Inputs: {content}\n\n"
-            "Return final JSON with keys: definition, intuition, key_steps, common_mistakes, "
+            "Return final JSON with keys: definition, intuition, formulas, key_steps, common_mistakes, "
             "examples, mcqs, flashcards, references, recap. "
             "Use empty lists where needed. "
             "Strict rule: final output must be coherent and fully bound to this concept. "
@@ -42,6 +42,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
 
         definition = str(data.get("definition") or content.get("definition") or "").strip()
         intuition = str(data.get("intuition") or content.get("intuition") or "").strip()
+        formulas = self.to_list(data.get("formulas"), self.to_list(content.get("formulas"), []))
         key_steps = self.to_list(data.get("key_steps"), self.to_list(content.get("key_steps"), []))[:8]
         common_mistakes = self.to_list(
             data.get("common_mistakes"),
@@ -49,8 +50,11 @@ class ArtifactSpecAgent(BaseStructuredAgent):
         )[:6]
         examples = self.to_list(data.get("examples"), self.to_list(content.get("examples"), []))[:5]
         recap = self.to_list(data.get("recap"), self.to_list(content.get("recap"), []))[:8]
-        if not definition or not intuition or not key_steps or not common_mistakes or not examples or not recap:
+        if not definition or not intuition or not key_steps or not common_mistakes or not recap:
             raise ValueError("ArtifactSpecAgent produced incomplete concept payload.")
+        practical_required = bool(content.get("practical_examples_required", True))
+        if practical_required and not examples:
+            raise ValueError("ArtifactSpecAgent produced insufficient examples for this concept.")
 
         mcqs = data.get("mcqs")
         if not isinstance(mcqs, list) or len(mcqs) < 6:
@@ -74,6 +78,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             concept_name=concept_name,
             definition=definition,
             intuition=intuition,
+            formulas=[str(item).strip() for item in formulas if str(item).strip()][:6],
             key_steps=key_steps,
             common_mistakes=common_mistakes,
             examples=examples,
