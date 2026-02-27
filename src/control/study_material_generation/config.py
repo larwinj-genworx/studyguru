@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     groq_api: str = Field(default="", validation_alias=AliasChoices("GROQ_API", "GROQ_API_KEY"))
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
+    youtube_api_key: str = Field(default="", alias="YOUTUBE_API_KEY")
     enable_crewai_execution: bool = Field(default=False, alias="ENABLE_CREWAI_EXECUTION")
     enable_fallback_content: bool = Field(default=False, alias="ENABLE_FALLBACK_CONTENT")
     material_output_dir: Path = Field(

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -31,15 +31,25 @@ class ResourceFinderAgent(BaseStructuredAgent):
         self._logger = logging.getLogger("uvicorn.error")
 
     async def execute(self, *, subject_name: str, grade_level: str, concept_name: str) -> dict[str, list[dict[str, str]]]:
-        searched_resources = await self._search_and_validate(
+        youtube_resources = await self._youtube_candidates(
             subject_name=subject_name,
             grade_level=grade_level,
             concept_name=concept_name,
         )
 
+        searched_resources: list[dict[str, str]] = []
+        try:
+            searched_resources = await self._search_and_validate(
+                subject_name=subject_name,
+                grade_level=grade_level,
+                concept_name=concept_name,
+            )
+        except ResourceUnavailableError as exc:
+            self._logger.warning("[ResourceFinderAgent] Skipping web search: %s", exc)
+
         merged: list[dict[str, str]] = []
         seen_urls: set[str] = set()
-        for resource in searched_resources:
+        for resource in [*youtube_resources, *searched_resources]:
             url = resource.get("url", "").strip()
             if not url or url in seen_urls:
                 continue
@@ -229,3 +239,104 @@ class ResourceFinderAgent(BaseStructuredAgent):
             if len(candidates) >= 5:
                 break
         return candidates
+
+    async def _youtube_candidates(
+        self,
+        *,
+        subject_name: str,
+        grade_level: str,
+        concept_name: str,
+    ) -> list[dict[str, str]]:
+        api_key = (self.settings.youtube_api_key or "").strip()
+        if not api_key:
+            return []
+
+        query = f"{grade_level} {subject_name} {concept_name} tutorial"
+        search_url = "https://www.googleapis.com/youtube/v3/search"
+        videos_url = "https://www.googleapis.com/youtube/v3/videos"
+        timeout = httpx.Timeout(min(self.settings.resource_search_timeout_seconds, 8))
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                search_response = await client.get(
+                    search_url,
+                    params={
+                        "part": "snippet",
+                        "q": query,
+                        "type": "video",
+                        "maxResults": 8,
+                        "safeSearch": "strict",
+                        "videoEmbeddable": "true",
+                        "relevanceLanguage": "en",
+                        "order": "viewCount",
+                        "key": api_key,
+                    },
+                )
+                if search_response.status_code >= 400:
+                    return []
+                search_data = search_response.json()
+                items = search_data.get("items", []) if isinstance(search_data, dict) else []
+                video_ids = [
+                    item.get("id", {}).get("videoId")
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+                video_ids = [vid for vid in video_ids if vid]
+                if not video_ids:
+                    return []
+
+                videos_response = await client.get(
+                    videos_url,
+                    params={
+                        "part": "snippet,statistics",
+                        "id": ",".join(video_ids[:8]),
+                        "key": api_key,
+                    },
+                )
+                if videos_response.status_code >= 400:
+                    return []
+                videos_data = videos_response.json()
+                video_items = videos_data.get("items", []) if isinstance(videos_data, dict) else []
+        except Exception as exc:
+            self._logger.warning("[ResourceFinderAgent] YouTube fetch failed: %s", exc)
+            return []
+
+        ranked: list[dict[str, Any]] = []
+        for item in video_items:
+            if not isinstance(item, dict):
+                continue
+            video_id = item.get("id")
+            snippet = item.get("snippet", {}) or {}
+            stats = item.get("statistics", {}) or {}
+            if not video_id:
+                continue
+            try:
+                views = int(stats.get("viewCount", 0))
+            except (TypeError, ValueError):
+                views = 0
+            try:
+                likes = int(stats.get("likeCount", 0))
+            except (TypeError, ValueError):
+                likes = 0
+            ranked.append(
+                {
+                    "title": str(snippet.get("title", "YouTube Lesson")).strip(),
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "views": views,
+                    "likes": likes,
+                }
+            )
+
+        if not ranked:
+            return []
+
+        ranked.sort(key=lambda item: (item["views"], item["likes"]), reverse=True)
+        best = ranked[0]
+        note = f"YouTube video (views: {best['views']:,}, likes: {best['likes']:,})"
+        return [
+            {
+                "title": best["title"][:120],
+                "url": best["url"],
+                "note": note[:240],
+            }
+        ]
