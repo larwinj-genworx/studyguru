@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 
 from .base import BaseStructuredAgent
-from ..config import Settings
+from src.config.settings import Settings
 
 
 class ResourceUnavailableError(RuntimeError):

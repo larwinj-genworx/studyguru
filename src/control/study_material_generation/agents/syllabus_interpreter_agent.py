@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import BaseStructuredAgent
-from ..config import Settings
+from src.config.settings import Settings
 
 
 class SyllabusInterpreterAgent(BaseStructuredAgent):

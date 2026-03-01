@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..models import ConceptContentPack
+from src.schemas.study_material import ConceptContentPack
 
 if TYPE_CHECKING:
     from pptx import Presentation

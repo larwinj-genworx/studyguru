@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .base import BaseStructuredAgent
-from ..config import Settings
-from ..models import ConceptContentPack
+from src.config.settings import Settings
+from src.schemas.study_material import ConceptContentPack
 
 
 class ArtifactSpecAgent(BaseStructuredAgent):

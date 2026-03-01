@@ -10,11 +10,11 @@ from langgraph.graph import END, START, StateGraph
 
 from ..agents import AgentRegistry
 from ..agents.resource_finder_agent import ResourceUnavailableError
-from ..config import Settings
-from ..models import ArtifactIndex, ConceptContentPack, JobStatus
+from src.config.settings import Settings
+from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobStatus, MaterialLifecycleStatus
+from src.data.repositories import workflow_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
-from ..store import InMemoryStore
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -22,13 +22,11 @@ logger = logging.getLogger("uvicorn.error")
 class MaterialWorkflow:
     def __init__(
         self,
-        store: InMemoryStore,
         settings: Settings,
         agents: AgentRegistry,
         pdf_renderer: PdfRenderer,
         json_renderer: JsonRenderer,
     ) -> None:
-        self.store = store
         self.settings = settings
         self.agents = agents
         self.pdf_renderer = pdf_renderer
@@ -87,8 +85,8 @@ class MaterialWorkflow:
         return graph.compile()
 
     async def validate_request_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
-        subject = self.store.get_subject_record(job.subject_id)
+        job = await workflow_repository.get_job(state["job_id"])
+        subject = await workflow_repository.get_subject_record(job.subject_id)
         missing = [concept_id for concept_id in job.concept_ids if concept_id not in subject.concept_meta]
         if missing:
             raise ValueError(f"Missing concepts in subject: {missing}")
@@ -99,7 +97,7 @@ class MaterialWorkflow:
             subject.name,
             concept_names,
         )
-        self._update_job(job.job_id, status=JobStatus.running, progress=8)
+        await self._update_job(job.job_id, status=JobStatus.running, progress=8)
         return {
             "job_id": state["job_id"],
             "subject_record": subject.model_dump(),
@@ -108,7 +106,7 @@ class MaterialWorkflow:
         }
 
     async def load_subject_and_concepts_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         subject = state["subject_record"]
         concept_states: dict[str, dict[str, Any]] = {}
         for concept_id in job.concept_ids:
@@ -119,7 +117,7 @@ class MaterialWorkflow:
                 "concept_description": concept.get("description"),
                 "revision_feedback": job.revision_note,
             }
-        self._update_job(job.job_id, progress=12)
+        await self._update_job(job.job_id, progress=12)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -130,11 +128,11 @@ class MaterialWorkflow:
 
     async def syllabus_interpreter_node(self, state: dict[str, Any]) -> dict[str, Any]:
         subject = state["subject_record"]
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "syllabus_mapping", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "syllabus_mapping", item["concept_name"])
             coverage_map = await asyncio.to_thread(
                 self.agents.syllabus_interpreter.execute,
                 subject_name=subject["name"],
@@ -147,7 +145,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        self._update_job(job.job_id, progress=22)
+        await self._update_job(job.job_id, progress=22)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -158,11 +156,11 @@ class MaterialWorkflow:
 
     async def student_pedagogy_node(self, state: dict[str, Any]) -> dict[str, Any]:
         subject = state["subject_record"]
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "pedagogy_planning", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "pedagogy_planning", item["concept_name"])
             item["teaching_plan"] = await asyncio.to_thread(
                 self.agents.student_pedagogy.execute,
                 concept_name=item["concept_name"],
@@ -173,7 +171,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        self._update_job(job.job_id, progress=34)
+        await self._update_job(job.job_id, progress=34)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -184,11 +182,11 @@ class MaterialWorkflow:
 
     async def concept_explainer_node(self, state: dict[str, Any]) -> dict[str, Any]:
         subject = state["subject_record"]
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "concept_explaining", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "concept_explaining", item["concept_name"])
             item["core_notes"] = await asyncio.to_thread(
                 self.agents.concept_explainer.execute,
                 concept_name=item["concept_name"],
@@ -200,7 +198,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        self._update_job(job.job_id, progress=45)
+        await self._update_job(job.job_id, progress=45)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -210,11 +208,11 @@ class MaterialWorkflow:
         }
 
     async def worked_example_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "example_generation", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "example_generation", item["concept_name"])
             core = item.get("core_notes", {})
             item["examples_pack"] = await asyncio.to_thread(
                 self.agents.worked_example.execute,
@@ -226,7 +224,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        self._update_job(job.job_id, progress=55)
+        await self._update_job(job.job_id, progress=55)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -236,11 +234,11 @@ class MaterialWorkflow:
         }
 
     async def practice_recall_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "practice_generation", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "practice_generation", item["concept_name"])
             core = item.get("core_notes", {})
             examples = item.get("examples_pack", {}).get("examples", [])
             item["practice_pack"] = await asyncio.to_thread(
@@ -253,7 +251,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        self._update_job(job.job_id, progress=64)
+        await self._update_job(job.job_id, progress=64)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -264,11 +262,11 @@ class MaterialWorkflow:
 
     async def resource_finder_node(self, state: dict[str, Any]) -> dict[str, Any]:
         subject = state["subject_record"]
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "resource_curation", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "resource_curation", item["concept_name"])
             try:
                 item["resource_pack"] = await self.agents.resource_finder.execute(
                     subject_name=subject["name"],
@@ -278,7 +276,7 @@ class MaterialWorkflow:
                 item["resource_required"] = True
                 return item
             except ResourceUnavailableError as exc:
-                self._set_concept_status(
+                await self._set_concept_status(
                     job.job_id,
                     item["concept_id"],
                     "resource_unavailable_skipped",
@@ -307,7 +305,7 @@ class MaterialWorkflow:
                     data["skip"] = False
                     data["resource_required"] = False
                     data["resource_pack"] = {"references": []}
-                    self._set_concept_status(
+                    await self._set_concept_status(
                         job.job_id,
                         concept_id,
                         "resource_unavailable_continued",
@@ -319,7 +317,7 @@ class MaterialWorkflow:
                     "All concepts were skipped due to missing external resources. "
                     "Generation cannot continue."
                 )
-        self._update_job(job.job_id, progress=72)
+        await self._update_job(job.job_id, progress=72)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -329,12 +327,12 @@ class MaterialWorkflow:
         }
 
     async def quality_guardian_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
         revision_targets: dict[str, str] = {}
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            self._set_concept_status(job.job_id, item["concept_id"], "quality_review", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "quality_review", item["concept_name"])
             core = item.get("core_notes", {})
             draft = {
                 **core,
@@ -366,7 +364,7 @@ class MaterialWorkflow:
         max_cycles = int(state.get("max_revision_cycles", 2))
 
         if revision_targets and revision_cycle < max_cycles:
-            self._update_job(job.job_id, progress=min(78, job.progress + 4))
+            await self._update_job(job.job_id, progress=min(78, job.progress + 4))
             return {
                 "job_id": state["job_id"],
                 "subject_record": state["subject_record"],
@@ -376,7 +374,7 @@ class MaterialWorkflow:
                 "max_revision_cycles": max_cycles,
             }
 
-        self._update_job(job.job_id, progress=80)
+        await self._update_job(job.job_id, progress=80)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -387,12 +385,12 @@ class MaterialWorkflow:
         }
 
     async def artifact_spec_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         concept_states = state["concept_states"]
         packs: list[dict[str, Any]] = []
 
         async def _run(item: dict[str, Any]) -> ConceptContentPack:
-            self._set_concept_status(job.job_id, item["concept_id"], "artifact_structuring", item["concept_name"])
+            await self._set_concept_status(job.job_id, item["concept_id"], "artifact_structuring", item["concept_name"])
             core = item.get("core_notes", {})
             content = {
                 **core,
@@ -416,7 +414,7 @@ class MaterialWorkflow:
         for pack in results:
             packs.append(pack.model_dump())
 
-        self._update_job(job.job_id, progress=86)
+        await self._update_job(job.job_id, progress=86)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -427,7 +425,7 @@ class MaterialWorkflow:
         }
 
     async def artifact_render_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         subject = state["subject_record"]
         concept_packs = [ConceptContentPack(**pack) for pack in state.get("concept_packs", [])]
 
@@ -474,7 +472,7 @@ class MaterialWorkflow:
                 **{name: str(path) for name, path in c_json.items()},
             }
 
-        self._update_job(job.job_id, progress=93)
+        await self._update_job(job.job_id, progress=93)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -520,7 +518,7 @@ class MaterialWorkflow:
         }
 
     async def persist_job_output_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         artifacts = state.get("artifacts", {})
         concept_artifacts = state.get("concept_artifacts", {})
         concept_states = state.get("concept_states", {})
@@ -530,26 +528,32 @@ class MaterialWorkflow:
             if isinstance(concept_data, dict)
         }
 
+        def _to_filename(value: str | None) -> str | None:
+            if not value:
+                return None
+            return Path(value).name
+
         job.artifact_index = ArtifactIndex(
-            pdf=artifacts.get("pdf"),
-            quick_revision_pdf=artifacts.get("quick_revision_pdf"),
-            quiz_json=artifacts.get("quiz_json"),
-            flashcards_json=artifacts.get("flashcards_json"),
-            resources_json=artifacts.get("resources_json"),
-            zip=artifacts.get("zip"),
+            pdf=_to_filename(artifacts.get("pdf")),
+            quick_revision_pdf=_to_filename(artifacts.get("quick_revision_pdf")),
+            quiz_json=_to_filename(artifacts.get("quiz_json")),
+            flashcards_json=_to_filename(artifacts.get("flashcards_json")),
+            resources_json=_to_filename(artifacts.get("resources_json")),
+            zip=_to_filename(artifacts.get("zip")),
         )
         job.concept_artifacts = {
             concept_id: ArtifactIndex(
-                pdf=artifact_map.get("pdf"),
-                quick_revision_pdf=artifact_map.get("quick_revision_pdf"),
-                quiz_json=artifact_map.get("quiz_json"),
-                flashcards_json=artifact_map.get("flashcards_json"),
-                resources_json=artifact_map.get("resources_json"),
-                zip=artifact_map.get("zip"),
+                pdf=_to_filename(artifact_map.get("pdf")),
+                quick_revision_pdf=_to_filename(artifact_map.get("quick_revision_pdf")),
+                quiz_json=_to_filename(artifact_map.get("quiz_json")),
+                flashcards_json=_to_filename(artifact_map.get("flashcards_json")),
+                resources_json=_to_filename(artifact_map.get("resources_json")),
+                zip=_to_filename(artifact_map.get("zip")),
             )
             for concept_id, artifact_map in concept_artifacts.items()
         }
-        job.output_dir = state.get("output_dir")
+        output_dir = state.get("output_dir")
+        job.output_dir = Path(output_dir).name if output_dir else None
         job.progress = 98
         for concept_id in concept_states.keys():
             concept_name = concept_name_by_id.get(concept_id, concept_id)
@@ -560,7 +564,7 @@ class MaterialWorkflow:
                 concept_name,
                 concept_id,
             )
-        self.store.update_job(job)
+        await workflow_repository.update_job(job)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -572,7 +576,7 @@ class MaterialWorkflow:
         }
 
     async def complete_or_fail_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        job = self.store.get_job(state["job_id"])
+        job = await workflow_repository.get_job(state["job_id"])
         if job.errors:
             job.status = JobStatus.failed
             job.progress = min(job.progress, 99)
@@ -581,7 +585,7 @@ class MaterialWorkflow:
             job.status = JobStatus.completed
             job.progress = 100
             logger.info("[MaterialJob:%s] Completed successfully.", job.job_id)
-        self.store.update_job(job)
+        await workflow_repository.update_job_fields(job)
         return {
             "job_id": state["job_id"],
             "final_status": job.status.value,
@@ -622,19 +626,18 @@ class MaterialWorkflow:
                     await asyncio.sleep(min(2**(attempt - 1), 4))
         raise RuntimeError(f"Concept pipeline failed for '{concept.get('concept_name')}'. {last_exc}")
 
-    def _update_job(self, job_id: str, status: JobStatus | None = None, progress: int | None = None) -> None:
-        job = self.store.get_job(job_id)
+    async def _update_job(self, job_id: str, status: JobStatus | None = None, progress: int | None = None) -> None:
+        job = await workflow_repository.get_job(job_id)
         if status:
             job.status = status
         if progress is not None:
             job.progress = progress
-        self.store.update_job(job)
+        await workflow_repository.update_job_fields(job)
 
-    def _set_concept_status(self, job_id: str, concept_id: str, status_text: str, concept_name: str | None = None) -> None:
-        job = self.store.get_job(job_id)
+    async def _set_concept_status(self, job_id: str, concept_id: str, status_text: str, concept_name: str | None = None) -> None:
+        job = await workflow_repository.get_job(job_id)
         previous = job.concept_statuses.get(concept_id)
-        job.concept_statuses[concept_id] = status_text
-        self.store.update_job(job)
+        await workflow_repository.set_concept_status(job_id, concept_id, status_text)
         if previous != status_text:
             logger.info(
                 "[MaterialJob:%s] Concept status: '%s' (%s) -> %s",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .base import BaseStructuredAgent
-from ..config import Settings
+from src.config.settings import Settings
 
 
 class WorkedExampleAgent(BaseStructuredAgent):

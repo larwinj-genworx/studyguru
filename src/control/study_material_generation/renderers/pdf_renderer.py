@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from xml.sax.saxutils import escape
 
-from ..models import ConceptContentPack
+from src.schemas.study_material import ConceptContentPack
 
 
 class PdfRenderer:

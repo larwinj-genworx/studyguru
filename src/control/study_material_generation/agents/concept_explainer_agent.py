@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import BaseStructuredAgent
-from ..config import Settings
+from src.config.settings import Settings
 
 
 class ConceptExplainerAgent(BaseStructuredAgent):
@@ -50,8 +50,6 @@ class ConceptExplainerAgent(BaseStructuredAgent):
                 "key_steps",
                 "common_mistakes",
                 "recap",
-                "formulas",
-                "practical_examples_required",
             ],
         )
         definition = str(data.get("definition", "")).strip()

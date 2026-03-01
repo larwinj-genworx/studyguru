@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..models import ConceptContentPack
+from src.schemas.study_material import ConceptContentPack
 
 class DocxRenderer:
     def render(

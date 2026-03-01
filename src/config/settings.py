@@ -3,8 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
-from pydantic import AliasChoices
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,8 +32,28 @@ class Settings(BaseSettings):
     resource_validation_timeout_seconds: int = Field(default=4, alias="RESOURCE_VALIDATION_TIMEOUT_SECONDS")
     allow_resourceless_generation: bool = Field(default=True, alias="ALLOW_RESOURCELESS_GENERATION")
 
+    postgres_url: str = Field(default="", alias="POSTGRES_URL")
+    postgres_db: str = Field(default="postgres", alias="POSTGRES_DB")
+    postgres_user: str = Field(default="postgres", alias="POSTGRES_USER")
+    postgres_password: str = Field(default="postgres", alias="POSTGRES_PASSWORD")
+    postgres_host: str = Field(default="localhost", alias="POSTGRES_HOST")
+    postgres_port: int = Field(default=5432, alias="POSTGRES_PORT")
+
+    jwt_secret: str = Field(min_length=16, alias="JWT_SECRET")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    jwt_exp_minutes: int = Field(default=60, alias="JWT_EXP_MINUTES")
+
     def ensure_output_dir(self) -> None:
         self.material_output_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def database_url(self) -> str:
+        if self.postgres_url:
+            return self.postgres_url
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
 
 
 @lru_cache(maxsize=1)

@@ -10,7 +10,7 @@ import time
 from urllib.parse import quote_plus
 from typing import Any
 
-from ..config import Settings
+from src.config.settings import Settings
 
 try:
     from crewai import Agent, Crew, Process, Task

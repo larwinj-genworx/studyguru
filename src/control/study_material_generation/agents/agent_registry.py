@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..config import Settings
+from src.config.settings import Settings
 from .artifact_spec_agent import ArtifactSpecAgent
 from .concept_explainer_agent import ConceptExplainerAgent
 from .practice_recall_agent import PracticeRecallAgent

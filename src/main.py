@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.rest.app import api_routers
+from src.data.clients.postgres import init_db
 
 
 app = FastAPI(
@@ -23,6 +24,10 @@ app.add_middleware(
 )
 
 app.include_router(api_routers)
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    await init_db()
 
 @app.get("/", tags=["meta"])
 async def root() -> dict[str, str]:
