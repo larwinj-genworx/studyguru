@@ -4,12 +4,15 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 
-from src.core.services import study_material_service
+from src.core.services import study_material_service, learning_content_service
 from src.data.repositories import study_material_repository
 from src.schemas.study_material import (
     ConceptBulkCreate,
     ConceptMaterialResponse,
     ConceptResponse,
+    ConceptBookmarkResponse,
+    LearningContentResponse,
+    LearningContentUpdate,
     MaterialLifecycleStatus,
     SubjectCreate,
     SubjectRecord,
@@ -165,6 +168,139 @@ async def publish_subject(subject_id: str, owner_id: str) -> SubjectResponse:
     await study_material_repository.update_concepts(concepts)
     await study_material_repository.update_materials(list(latest_materials.values()))
     return study_material_service.to_subject_response(subject, concepts)
+
+
+async def unpublish_subject(subject_id: str, owner_id: str) -> SubjectResponse:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    if not subject.published:
+        return study_material_service.to_subject_response(
+            subject, await study_material_repository.list_concepts(subject_id)
+        )
+    concepts = await study_material_repository.list_concepts(subject_id)
+    latest_materials = await study_material_repository.get_latest_materials(
+        [concept.id for concept in concepts]
+    )
+    now = datetime.now(timezone.utc)
+    subject.published = False
+    subject.updated_at = now
+    for concept in concepts:
+        if concept.material_status == MaterialLifecycleStatus.published:
+            concept.material_status = MaterialLifecycleStatus.approved
+    for material in latest_materials.values():
+        if material.lifecycle_status == MaterialLifecycleStatus.published:
+            material.lifecycle_status = MaterialLifecycleStatus.approved
+            material.published_at = None
+    await study_material_repository.update_subject(subject)
+    await study_material_repository.update_concepts(concepts)
+    await study_material_repository.update_materials(list(latest_materials.values()))
+    return study_material_service.to_subject_response(subject, concepts)
+
+
+async def get_admin_concept_learning_content(
+    subject_id: str,
+    concept_id: str,
+    owner_id: str,
+) -> LearningContentResponse:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    concept = await study_material_repository.get_concept(concept_id)
+    if not concept or concept.subject_id != subject.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
+    material = await study_material_repository.get_latest_material(concept_id)
+    if not material or not material.content:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Learning content not available.")
+    return study_material_service.to_learning_content_response(subject, concept, material)
+
+
+async def get_student_concept_learning_content(
+    subject_id: str,
+    concept_id: str,
+) -> LearningContentResponse:
+    subject = await study_material_repository.get_subject(subject_id)
+    if not subject or not subject.published:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject is not published.")
+    concept = await study_material_repository.get_concept(concept_id)
+    if not concept or concept.subject_id != subject.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
+    material = await study_material_repository.get_latest_material(
+        concept_id, published_only=True
+    )
+    if not material or not material.content:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Learning content not available.")
+    return study_material_service.to_learning_content_response(subject, concept, material)
+
+
+async def update_admin_concept_learning_content(
+    subject_id: str,
+    concept_id: str,
+    payload: LearningContentUpdate,
+    owner_id: str,
+) -> LearningContentResponse:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    concept = await study_material_repository.get_concept(concept_id)
+    if not concept or concept.subject_id != subject.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
+    material = await study_material_repository.get_latest_material(concept_id)
+    if not material:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Learning content not found.")
+    if material.lifecycle_status == MaterialLifecycleStatus.published:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unpublish before editing published learning content.",
+        )
+    material.content = payload.content.model_dump()
+    material.content_text = learning_content_service.build_search_text(payload.content)
+    material.content_schema_version = learning_content_service.CONTENT_SCHEMA_VERSION
+    material.updated_at = datetime.now(timezone.utc)
+    await study_material_repository.update_materials([material])
+    return study_material_service.to_learning_content_response(subject, concept, material)
+
+
+async def list_student_bookmarks(
+    user_id: str,
+    subject_id: str | None = None,
+) -> list[ConceptBookmarkResponse]:
+    bookmarks = await study_material_repository.list_bookmarks(user_id, subject_id)
+    responses: list[ConceptBookmarkResponse] = []
+    for bookmark in bookmarks:
+        concept = await study_material_repository.get_concept(bookmark.concept_id)
+        if not concept:
+            continue
+        subject = await study_material_repository.get_subject(concept.subject_id)
+        if not subject or not subject.published:
+            continue
+        responses.append(
+            ConceptBookmarkResponse(
+                concept_id=concept.id,
+                concept_name=concept.name,
+                subject_id=subject.id,
+                subject_name=subject.name,
+                created_at=bookmark.created_at,
+            )
+        )
+    return responses
+
+
+async def add_student_bookmark(user_id: str, subject_id: str, concept_id: str) -> None:
+    subject = await study_material_repository.get_subject(subject_id)
+    if not subject or not subject.published:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject is not published.")
+    concept = await study_material_repository.get_concept(concept_id)
+    if not concept or concept.subject_id != subject.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
+    material = await study_material_repository.get_latest_material(concept_id, published_only=True)
+    if not material or material.lifecycle_status != MaterialLifecycleStatus.published:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Concept is not published yet.")
+    await study_material_repository.create_bookmark(user_id, concept_id)
+
+
+async def remove_student_bookmark(user_id: str, concept_id: str) -> None:
+    await study_material_repository.delete_bookmark(user_id, concept_id)
 
 
 async def get_subject_record(subject_id: str) -> SubjectRecord:

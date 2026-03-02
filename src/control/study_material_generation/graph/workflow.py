@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -12,7 +13,9 @@ from ..agents import AgentRegistry
 from ..agents.resource_finder_agent import ResourceUnavailableError
 from src.config.settings import Settings
 from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobStatus, MaterialLifecycleStatus
-from src.data.repositories import workflow_repository
+from src.data.models.postgres.models import ConceptMaterial
+from src.core.services import learning_content_service
+from src.data.repositories import workflow_repository, study_material_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
 from ..renderers.study_material_json_renderer import StudyMaterialJsonRenderer
@@ -54,6 +57,7 @@ class MaterialWorkflow:
         graph.add_node("student_pedagogy_node", self.student_pedagogy_node)
         graph.add_node("study_material_engine_node", self.study_material_engine_node)
         graph.add_node("concept_explainer_node", self.concept_explainer_node)
+        graph.add_node("formula_explainer_node", self.formula_explainer_node)
         graph.add_node("worked_example_node", self.worked_example_node)
         graph.add_node("practice_recall_node", self.practice_recall_node)
         graph.add_node("resource_finder_node", self.resource_finder_node)
@@ -70,7 +74,8 @@ class MaterialWorkflow:
         graph.add_edge("syllabus_interpreter_node", "student_pedagogy_node")
         graph.add_edge("student_pedagogy_node", "study_material_engine_node")
         graph.add_edge("study_material_engine_node", "concept_explainer_node")
-        graph.add_edge("concept_explainer_node", "worked_example_node")
+        graph.add_edge("concept_explainer_node", "formula_explainer_node")
+        graph.add_edge("formula_explainer_node", "worked_example_node")
         graph.add_edge("worked_example_node", "practice_recall_node")
         graph.add_edge("practice_recall_node", "resource_finder_node")
         graph.add_edge("resource_finder_node", "quality_guardian_node")
@@ -245,6 +250,33 @@ class MaterialWorkflow:
 
         updated = await self._map_concepts(concept_states, _run)
         await self._update_job(job.job_id, progress=45)
+        return {
+            "job_id": state["job_id"],
+            "subject_record": subject,
+            "concept_states": updated,
+            "revision_cycle": state.get("revision_cycle", 0),
+            "max_revision_cycles": state.get("max_revision_cycles", self.settings.max_revision_cycles),
+        }
+
+    async def formula_explainer_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        subject = state["subject_record"]
+        job = await workflow_repository.get_job(state["job_id"])
+        concept_states = state["concept_states"]
+
+        async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            await self._set_concept_status(job.job_id, item["concept_id"], "formula_explaining", item["concept_name"])
+            core = item.get("core_notes", {})
+            formula_payload = await asyncio.to_thread(
+                self.agents.formula_explainer.execute,
+                concept_name=item["concept_name"],
+                grade_level=subject["grade_level"],
+                formulas=core.get("formulas", []),
+            )
+            item["formula_cards"] = formula_payload.get("formula_cards", [])
+            return item
+
+        updated = await self._map_concepts(concept_states, _run)
+        await self._update_job(job.job_id, progress=50)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -594,6 +626,7 @@ class MaterialWorkflow:
 
     async def persist_job_output_node(self, state: dict[str, Any]) -> dict[str, Any]:
         job = await workflow_repository.get_job(state["job_id"])
+        subject_record = state["subject_record"]
         artifacts = state.get("artifacts", {})
         concept_artifacts = state.get("concept_artifacts", {})
         concept_states = state.get("concept_states", {})
@@ -629,6 +662,96 @@ class MaterialWorkflow:
             )
             for concept_id, artifact_map in concept_artifacts.items()
         }
+
+        concept_ids = list(concept_states.keys())
+        concept_pack_map: dict[str, ConceptContentPack] = {}
+        for pack in state.get("concept_packs", []):
+            try:
+                concept_pack = ConceptContentPack(**pack)
+                concept_pack_map[concept_pack.concept_id] = concept_pack
+            except Exception:
+                continue
+
+        latest_materials = await study_material_repository.get_latest_materials(concept_ids)
+        existing_materials = await study_material_repository.get_materials_for_job(job.job_id, concept_ids)
+        concepts = await study_material_repository.list_concepts(subject_record["subject_id"])
+        concept_model_map = {concept.id: concept for concept in concepts}
+        now = datetime.now(timezone.utc)
+
+        new_materials: list[ConceptMaterial] = []
+        updated_materials: list[ConceptMaterial] = []
+        updated_concepts = []
+
+        for concept_id in concept_ids:
+            concept_pack = concept_pack_map.get(concept_id)
+            concept_state = concept_states.get(concept_id, {})
+            engine_output = concept_state.get("engine_output")
+            formula_cards = concept_state.get("formula_cards", [])
+
+            existing = existing_materials.get(concept_id)
+            if existing:
+                version = existing.version
+            else:
+                latest = latest_materials.get(concept_id)
+                version = (latest.version + 1) if latest else 1
+
+            content = learning_content_service.build_learning_content(
+                subject_name=subject_record["name"],
+                grade_level=subject_record["grade_level"],
+                concept_id=concept_id,
+                concept_name=concept_name_by_id.get(concept_id, concept_id),
+                concept_pack=concept_pack,
+                engine_output=engine_output,
+                formula_cards=formula_cards,
+                generated_at=now,
+                status=MaterialLifecycleStatus.draft,
+                version=version,
+            )
+            search_text = learning_content_service.build_search_text(content)
+            artifact_index_payload = job.concept_artifacts.get(concept_id)
+            artifact_index_json = (
+                artifact_index_payload.model_dump(exclude_none=True) if artifact_index_payload else {}
+            )
+
+            if existing:
+                existing.lifecycle_status = MaterialLifecycleStatus.draft
+                existing.artifact_index = artifact_index_json
+                existing.content = content.model_dump()
+                existing.content_text = search_text
+                existing.content_schema_version = learning_content_service.CONTENT_SCHEMA_VERSION
+                existing.updated_at = now
+                updated_materials.append(existing)
+                material_version = existing.version
+            else:
+                material = ConceptMaterial(
+                    subject_id=subject_record["subject_id"],
+                    concept_id=concept_id,
+                    lifecycle_status=MaterialLifecycleStatus.draft,
+                    version=version,
+                    source_job_id=job.job_id,
+                    artifact_index=artifact_index_json,
+                    content=content.model_dump(),
+                    content_text=search_text,
+                    content_schema_version=learning_content_service.CONTENT_SCHEMA_VERSION,
+                    generated_at=now,
+                    updated_at=now,
+                )
+                new_materials.append(material)
+                material_version = material.version
+
+            concept_model = concept_model_map.get(concept_id)
+            if concept_model:
+                concept_model.material_status = MaterialLifecycleStatus.draft
+                concept_model.material_version = material_version
+                updated_concepts.append(concept_model)
+
+        if new_materials:
+            await study_material_repository.create_concept_materials(new_materials)
+        if updated_materials:
+            await study_material_repository.update_materials(updated_materials)
+        if updated_concepts:
+            await study_material_repository.update_concepts(updated_concepts)
+
         output_dir = state.get("output_dir")
         job.output_dir = Path(output_dir).name if output_dir else None
         job.progress = 98

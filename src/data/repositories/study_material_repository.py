@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from sqlalchemy import desc, select
+from datetime import datetime, timezone
 
 from src.data.clients.postgres import AsyncSessionFactory
-from src.data.models.postgres.models import Concept, ConceptMaterial, Subject
+from src.data.models.postgres.models import Concept, ConceptMaterial, Subject, ConceptBookmark
 from src.schemas.study_material import MaterialLifecycleStatus
 
 
@@ -53,6 +54,11 @@ async def list_concepts(subject_id: str) -> list[Concept]:
             select(Concept).where(Concept.subject_id == subject_id).order_by(Concept.created_at)
         )
         return result.scalars().all()
+
+
+async def get_concept(concept_id: str) -> Concept | None:
+    async with AsyncSessionFactory() as session:
+        return await session.get(Concept, concept_id)
 
 
 async def add_concepts(concepts: list[Concept]) -> None:
@@ -112,6 +118,20 @@ async def get_latest_material(concept_id: str, published_only: bool = False) -> 
         return result.scalars().first()
 
 
+async def get_materials_for_job(job_id: str, concept_ids: list[str]) -> dict[str, ConceptMaterial]:
+    if not concept_ids:
+        return {}
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(ConceptMaterial).where(
+                ConceptMaterial.source_job_id == job_id,
+                ConceptMaterial.concept_id.in_(concept_ids),
+            )
+        )
+        rows = result.scalars().all()
+        return {row.concept_id: row for row in rows}
+
+
 async def create_concept_materials(materials: list[ConceptMaterial]) -> None:
     async with AsyncSessionFactory() as session:
         async with session.begin():
@@ -126,4 +146,52 @@ async def update_materials(materials: list[ConceptMaterial]) -> None:
                 if not db_material:
                     continue
                 db_material.lifecycle_status = material.lifecycle_status
-                db_material.published_at = material.published_at
+                if material.published_at is not None or material.lifecycle_status != MaterialLifecycleStatus.published:
+                    db_material.published_at = material.published_at
+                if material.approved_at is not None:
+                    db_material.approved_at = material.approved_at
+                if material.artifact_index is not None:
+                    db_material.artifact_index = material.artifact_index
+                if material.content is not None:
+                    db_material.content = material.content
+                if material.content_text is not None:
+                    db_material.content_text = material.content_text
+                if material.content_schema_version is not None:
+                    db_material.content_schema_version = material.content_schema_version
+                db_material.updated_at = datetime.now(timezone.utc)
+
+
+async def list_bookmarks(user_id: str, subject_id: str | None = None) -> list[ConceptBookmark]:
+    async with AsyncSessionFactory() as session:
+        stmt = select(ConceptBookmark).where(ConceptBookmark.user_id == user_id)
+        if subject_id:
+            stmt = stmt.join(Concept, Concept.id == ConceptBookmark.concept_id).where(
+                Concept.subject_id == subject_id
+            )
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+
+async def create_bookmark(user_id: str, concept_id: str) -> ConceptBookmark:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            existing = await session.get(
+                ConceptBookmark,
+                {"user_id": user_id, "concept_id": concept_id},
+            )
+            if existing:
+                return existing
+            bookmark = ConceptBookmark(user_id=user_id, concept_id=concept_id)
+            session.add(bookmark)
+        return bookmark
+
+
+async def delete_bookmark(user_id: str, concept_id: str) -> None:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            row = await session.get(
+                ConceptBookmark,
+                {"user_id": user_id, "concept_id": concept_id},
+            )
+            if row:
+                await session.delete(row)

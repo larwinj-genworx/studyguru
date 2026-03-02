@@ -133,9 +133,11 @@ async def approve_job(
             detail=f"Concept artifacts missing in job output: {unknown}",
         )
 
-    materials: list = []
+    materials_to_update: list = []
+    materials_to_create: list = []
     updated_concepts: list = []
     now = datetime.now(timezone.utc)
+    existing_materials = await study_material_repository.get_materials_for_job(job.id, target_ids)
     for concept_id in target_ids:
         concept = await material_job_repository.get_concept(concept_id)
         if not concept:
@@ -143,21 +145,31 @@ async def approve_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unknown concept ID: {concept_id}",
             )
-        latest_material = await study_material_repository.get_latest_material(concept_id)
-        next_version = (latest_material.version + 1) if latest_material else 1
         job_concept = job_concept_map[concept_id]
-        materials.append(
-            material_job_service.build_concept_material(
-                subject_id=job.subject_id,
-                concept_id=concept_id,
-                source_job_id=job.id,
-                artifact_index=job_concept.artifact_index or {},
-                version=next_version,
-                approved_at=now,
+        existing = existing_materials.get(concept_id)
+        if existing:
+            existing.lifecycle_status = MaterialLifecycleStatus.approved
+            existing.approved_at = now
+            if job_concept.artifact_index:
+                existing.artifact_index = job_concept.artifact_index
+            materials_to_update.append(existing)
+            concept.material_status = MaterialLifecycleStatus.approved
+            concept.material_version = existing.version
+        else:
+            latest_material = await study_material_repository.get_latest_material(concept_id)
+            next_version = (latest_material.version + 1) if latest_material else 1
+            materials_to_create.append(
+                material_job_service.build_concept_material(
+                    subject_id=job.subject_id,
+                    concept_id=concept_id,
+                    source_job_id=job.id,
+                    artifact_index=job_concept.artifact_index or {},
+                    version=next_version,
+                    approved_at=now,
+                )
             )
-        )
-        concept.material_status = MaterialLifecycleStatus.approved
-        concept.material_version = next_version
+            concept.material_status = MaterialLifecycleStatus.approved
+            concept.material_version = next_version
         updated_concepts.append(concept)
 
     job.review_status = ReviewStatus.approved
@@ -165,7 +177,10 @@ async def approve_job(
     job.reviewed_at = now
     job.updated_at = now
 
-    await study_material_repository.create_concept_materials(materials)
+    if materials_to_create:
+        await study_material_repository.create_concept_materials(materials_to_create)
+    if materials_to_update:
+        await study_material_repository.update_materials(materials_to_update)
     await study_material_repository.update_concepts(updated_concepts)
     await material_job_repository.update_job(job)
 

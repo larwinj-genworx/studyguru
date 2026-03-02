@@ -89,6 +89,39 @@ class ConceptMaterialResponse(BaseModel):
     published_at: datetime | None = None
 
 
+class LearningSection(BaseModel):
+    id: str
+    title: str
+    level: int = Field(ge=1, le=3)
+    blocks: list[dict[str, Any]] = Field(default_factory=list)
+    children: list["LearningSection"] = Field(default_factory=list)
+
+
+class LearningContent(BaseModel):
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    highlights: list[str] = Field(default_factory=list)
+    sections: list[LearningSection] = Field(default_factory=list)
+
+
+class LearningContentResponse(BaseModel):
+    concept_id: str
+    concept_name: str
+    subject_id: str
+    subject_name: str
+    grade_level: str
+    lifecycle_status: MaterialLifecycleStatus
+    version: int
+    generated_at: datetime
+    approved_at: datetime | None = None
+    published_at: datetime | None = None
+    content_schema_version: str | None = None
+    content: LearningContent
+
+
+class LearningContentUpdate(BaseModel):
+    content: LearningContent
+
+
 class ConceptResponse(BaseModel):
     concept_id: str
     name: str
@@ -150,6 +183,17 @@ class ConceptMaterialRecord(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     approved_at: datetime | None = None
     published_at: datetime | None = None
+
+
+class ConceptBookmarkResponse(BaseModel):
+    concept_id: str
+    concept_name: str
+    subject_id: str
+    subject_name: str
+    created_at: datetime
+
+
+LearningSection.model_rebuild()
 
 
 class SubjectRecord(BaseModel):

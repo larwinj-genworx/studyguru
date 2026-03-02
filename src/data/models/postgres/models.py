@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -116,10 +116,27 @@ class ConceptMaterial(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     source_job_id: Mapped[str] = mapped_column(ForeignKey("material_jobs.id"), index=True, nullable=False)
     artifact_index: Mapped[dict] = mapped_column(JSONB, default=dict)
+    content: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    content_text: Mapped[str | None] = mapped_column(Text, default=None)
+    content_schema_version: Mapped[str | None] = mapped_column(String(24), default="v1")
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         UniqueConstraint("concept_id", "version", name="uq_concept_version"),
+        Index(
+            "ix_concept_materials_content_text_fts",
+            text("to_tsvector('english', content_text)"),
+            postgresql_using="gin",
+        ),
     )
+
+
+class ConceptBookmark(Base):
+    __tablename__ = "concept_bookmarks"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

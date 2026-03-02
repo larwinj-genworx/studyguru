@@ -10,6 +10,8 @@ from src.schemas.study_material import (
     ConceptMaterialRecord,
     ConceptMaterialResponse,
     ConceptResponse,
+    LearningContent,
+    LearningContentResponse,
     MaterialLifecycleStatus,
     SubjectCreate,
     SubjectRecord,
@@ -114,6 +116,31 @@ def to_material_response(concept: Concept, material: ConceptMaterial) -> Concept
         generated_at=material.generated_at,
         approved_at=material.approved_at,
         published_at=material.published_at,
+    )
+
+
+def to_learning_content_response(
+    subject: Subject,
+    concept: Concept,
+    material: ConceptMaterial,
+) -> LearningContentResponse:
+    content_payload = material.content or {}
+    if not isinstance(content_payload, dict):
+        content_payload = {}
+    content = LearningContent(**content_payload) if content_payload else LearningContent()
+    return LearningContentResponse(
+        concept_id=concept.id,
+        concept_name=concept.name,
+        subject_id=subject.id,
+        subject_name=subject.name,
+        grade_level=subject.grade_level,
+        lifecycle_status=material.lifecycle_status,
+        version=material.version,
+        generated_at=material.generated_at,
+        approved_at=material.approved_at,
+        published_at=material.published_at,
+        content_schema_version=material.content_schema_version,
+        content=content,
     )
 
 

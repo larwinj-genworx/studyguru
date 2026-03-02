@@ -10,8 +10,11 @@ from src.schemas.study_material import (
     AdminMaterialJobCreate,
     AdminMaterialRegenerateRequest,
     ConceptBulkCreate,
+    ConceptBookmarkResponse,
     ConceptMaterialResponse,
     ConceptResponse,
+    LearningContentResponse,
+    LearningContentUpdate,
     MaterialJobStatusResponse,
     StudentConceptSelection,
     SubjectCreate,
@@ -217,6 +220,54 @@ async def publish_subject(
     return await study_material_app_service.publish_subject(subject_id, owner_id=current_user["id"])
 
 
+@router.post(
+    "/admin/subjects/{subject_id}/unpublish",
+    response_model=SubjectResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def unpublish_subject(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> SubjectResponse:
+    return await study_material_app_service.unpublish_subject(subject_id, owner_id=current_user["id"])
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/learning",
+    response_model=LearningContentResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def get_admin_learning_content(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LearningContentResponse:
+    return await study_material_app_service.get_admin_concept_learning_content(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.patch(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/learning",
+    response_model=LearningContentResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def update_admin_learning_content(
+    subject_id: str,
+    concept_id: str,
+    payload: LearningContentUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> LearningContentResponse:
+    return await study_material_app_service.update_admin_concept_learning_content(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        payload=payload,
+        owner_id=current_user["id"],
+    )
+
+
 # ----- Student APIs -----
 @router.get(
     "/student/subjects",
@@ -270,6 +321,69 @@ async def download_student_concept_artifact(subject_id: str, concept_id: str, ar
         artifact_name=artifact_name,
     )
     return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning",
+    response_model=LearningContentResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_learning_content(
+    subject_id: str,
+    concept_id: str,
+) -> LearningContentResponse:
+    return await study_material_app_service.get_student_concept_learning_content(
+        subject_id=subject_id,
+        concept_id=concept_id,
+    )
+
+
+@router.get(
+    "/student/bookmarks",
+    response_model=list[ConceptBookmarkResponse],
+    dependencies=[Depends(require_role("student"))],
+)
+async def list_student_bookmarks(
+    subject_id: str | None = None,
+    current_user: dict = Depends(get_current_user),
+) -> list[ConceptBookmarkResponse]:
+    return await study_material_app_service.list_student_bookmarks(
+        user_id=current_user["id"],
+        subject_id=subject_id,
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/bookmark",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role("student"))],
+)
+async def add_student_bookmark(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    await study_material_app_service.add_student_bookmark(
+        user_id=current_user["id"],
+        subject_id=subject_id,
+        concept_id=concept_id,
+    )
+
+
+@router.delete(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/bookmark",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role("student"))],
+)
+async def remove_student_bookmark(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    await study_material_app_service.remove_student_bookmark(
+        user_id=current_user["id"],
+        concept_id=concept_id,
+    )
 
 
 @router.get(
