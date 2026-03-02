@@ -61,6 +61,44 @@ class ConceptExplainerAgent(BaseStructuredAgent):
         if not definition or not intuition or not key_steps or not common_mistakes or not recap:
             raise ValueError("ConceptExplainerAgent produced incomplete core notes.")
 
+        def _word_count(text: str) -> int:
+            return len(text.split())
+
+        def _ensure_definition_min_words(
+            text: str,
+            *,
+            min_words: int,
+            max_words: int,
+            objectives: list[str],
+            steps: list[str],
+        ) -> str:
+            if _word_count(text) >= min_words:
+                return text
+            additions: list[str] = []
+            if objectives:
+                trimmed = [obj.strip().rstrip(".") for obj in objectives if obj.strip()]
+                if trimmed:
+                    focus = "; ".join(trimmed[:2])
+                    additions.append(
+                        f"At this level, students should be able to {focus}."
+                    )
+            if steps:
+                lead_step = steps[0].strip().rstrip(".")
+                if lead_step:
+                    additions.append(
+                        f"A typical approach begins by {lead_step.lower()} and then checking the result."
+                    )
+            additions.append(
+                f"For {grade_level} learners, the focus is on understanding {concept_name} clearly and applying it correctly."
+            )
+            expanded = " ".join([text.strip(), *additions]).strip()
+            if _word_count(expanded) < min_words:
+                expanded = (
+                    f"{expanded} "
+                    f"This helps students explain the idea in their own words and use it in routine problems."
+                ).strip()
+            return _limit_words(expanded, max_words)
+
         def _to_bool(value: Any, default: bool = True) -> bool:
             if isinstance(value, bool):
                 return value
@@ -78,7 +116,14 @@ class ConceptExplainerAgent(BaseStructuredAgent):
                 return text
             return " ".join(words[:max_words]).strip()
 
-        definition = _limit_words(definition, 140)
+        objectives = self.to_list(coverage_map.get("objectives"), [])
+        definition = _ensure_definition_min_words(
+            definition,
+            min_words=70,
+            max_words=140,
+            objectives=objectives,
+            steps=key_steps,
+        )
         intuition = _limit_words(intuition, 90)
         formulas = [str(item).strip() for item in formulas if str(item).strip()][:6]
         practical_examples_required = _to_bool(data.get("practical_examples_required"), default=True)

@@ -26,6 +26,7 @@ _ALLOWED_ARTIFACTS = {
     "quiz_json",
     "flashcards_json",
     "resources_json",
+    "study_material_json",
     "zip",
 }
 

@@ -72,6 +72,7 @@ class ArtifactIndex(BaseModel):
     quiz_json: str | None = None
     flashcards_json: str | None = None
     resources_json: str | None = None
+    study_material_json: str | None = None
     zip: str | None = None
     extras: dict[str, str] = Field(default_factory=dict)
 

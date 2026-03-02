@@ -11,6 +11,7 @@ from src.control.study_material_generation.agents import build_agent_registry
 from src.control.study_material_generation.graph.workflow import MaterialWorkflow
 from src.control.study_material_generation.renderers.json_renderer import JsonRenderer
 from src.control.study_material_generation.renderers.pdf_renderer import PdfRenderer
+from src.control.study_material_generation.renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 from src.core.services import material_job_service
 from src.data.repositories import material_job_repository, study_material_repository
 from src.schemas.study_material import (
@@ -38,6 +39,7 @@ def _ensure_workflow() -> MaterialWorkflow:
         agents=build_agent_registry(_settings),
         pdf_renderer=PdfRenderer(),
         json_renderer=JsonRenderer(),
+        study_material_json_renderer=StudyMaterialJsonRenderer(),
     )
     return _workflow
 

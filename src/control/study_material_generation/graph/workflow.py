@@ -15,6 +15,7 @@ from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobSta
 from src.data.repositories import workflow_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
+from ..renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -26,11 +27,13 @@ class MaterialWorkflow:
         agents: AgentRegistry,
         pdf_renderer: PdfRenderer,
         json_renderer: JsonRenderer,
+        study_material_json_renderer: StudyMaterialJsonRenderer,
     ) -> None:
         self.settings = settings
         self.agents = agents
         self.pdf_renderer = pdf_renderer
         self.json_renderer = json_renderer
+        self.study_material_json_renderer = study_material_json_renderer
         self._graph = self._build_graph()
 
     async def run(self, job_id: str) -> dict[str, Any]:
@@ -49,6 +52,7 @@ class MaterialWorkflow:
         graph.add_node("load_subject_and_concepts_node", self.load_subject_and_concepts_node)
         graph.add_node("syllabus_interpreter_node", self.syllabus_interpreter_node)
         graph.add_node("student_pedagogy_node", self.student_pedagogy_node)
+        graph.add_node("study_material_engine_node", self.study_material_engine_node)
         graph.add_node("concept_explainer_node", self.concept_explainer_node)
         graph.add_node("worked_example_node", self.worked_example_node)
         graph.add_node("practice_recall_node", self.practice_recall_node)
@@ -64,7 +68,8 @@ class MaterialWorkflow:
         graph.add_edge("validate_request_node", "load_subject_and_concepts_node")
         graph.add_edge("load_subject_and_concepts_node", "syllabus_interpreter_node")
         graph.add_edge("syllabus_interpreter_node", "student_pedagogy_node")
-        graph.add_edge("student_pedagogy_node", "concept_explainer_node")
+        graph.add_edge("student_pedagogy_node", "study_material_engine_node")
+        graph.add_edge("study_material_engine_node", "concept_explainer_node")
         graph.add_edge("concept_explainer_node", "worked_example_node")
         graph.add_edge("worked_example_node", "practice_recall_node")
         graph.add_edge("practice_recall_node", "resource_finder_node")
@@ -172,6 +177,47 @@ class MaterialWorkflow:
 
         updated = await self._map_concepts(concept_states, _run)
         await self._update_job(job.job_id, progress=34)
+        return {
+            "job_id": state["job_id"],
+            "subject_record": subject,
+            "concept_states": updated,
+            "revision_cycle": state.get("revision_cycle", 0),
+            "max_revision_cycles": state.get("max_revision_cycles", self.settings.max_revision_cycles),
+        }
+
+    async def study_material_engine_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        subject = state["subject_record"]
+        job = await workflow_repository.get_job(state["job_id"])
+        concept_states = state["concept_states"]
+        auto_revision_enabled = self.settings.max_revision_cycles > 0
+
+        async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            await self._set_concept_status(
+                job.job_id,
+                item["concept_id"],
+                "study_material_engine_generation",
+                item["concept_name"],
+            )
+            try:
+                item["engine_output"] = await asyncio.to_thread(
+                    self.agents.study_material_engine.execute,
+                    subject_name=subject["name"],
+                    concept_name=item["concept_name"],
+                    level=subject["grade_level"],
+                    auto_revision_enabled=auto_revision_enabled,
+                )
+            except Exception as exc:
+                item["engine_output_error"] = str(exc)
+                logger.warning(
+                    "[MaterialJob:%s] Study material engine failed for concept '%s': %s",
+                    job.job_id,
+                    item.get("concept_name", item["concept_id"]),
+                    exc,
+                )
+            return item
+
+        updated = await self._map_concepts(concept_states, _run)
+        await self._update_job(job.job_id, progress=40)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -446,6 +492,8 @@ class MaterialWorkflow:
             concept_packs=concept_packs,
         )
         json_paths = self.json_renderer.render(output_dir=output_dir, concept_packs=concept_packs)
+        concept_states = state.get("concept_states", {})
+        engine_payloads: list[dict[str, Any]] = []
 
         concept_artifacts: dict[str, dict[str, str]] = {}
         concepts_root = output_dir / "concepts"
@@ -471,19 +519,46 @@ class MaterialWorkflow:
                 "quick_revision_pdf": str(c_quick_pdf),
                 **{name: str(path) for name, path in c_json.items()},
             }
+            concept_state = concept_states.get(pack.concept_id, {})
+            engine_output = concept_state.get("engine_output")
+            if engine_output:
+                engine_payloads.append(
+                    {
+                        "concept_id": pack.concept_id,
+                        "concept_name": pack.concept_name,
+                        "study_material": engine_output,
+                    }
+                )
+                c_engine_json = self.study_material_json_renderer.render_concept(
+                    output_dir=concept_dir,
+                    payload=engine_output,
+                )
+                concept_artifacts[pack.concept_id]["study_material_json"] = str(c_engine_json)
+
+        engine_json_path = None
+        if engine_payloads:
+            engine_json_path = self.study_material_json_renderer.render(
+                output_dir=output_dir,
+                subject_name=subject["name"],
+                grade_level=subject["grade_level"],
+                concept_payloads=engine_payloads,
+            )
 
         await self._update_job(job.job_id, progress=93)
+        artifacts = {
+            "pdf": str(pdf_path),
+            "quick_revision_pdf": str(quick_pdf_path),
+            **{name: str(path) for name, path in json_paths.items()},
+        }
+        if engine_json_path:
+            artifacts["study_material_json"] = str(engine_json_path)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
-            "concept_states": state.get("concept_states", {}),
+            "concept_states": concept_states,
             "concept_packs": state.get("concept_packs", []),
             "output_dir": str(output_dir),
-            "artifacts": {
-                "pdf": str(pdf_path),
-                "quick_revision_pdf": str(quick_pdf_path),
-                **{name: str(path) for name, path in json_paths.items()},
-            },
+            "artifacts": artifacts,
             "concept_artifacts": concept_artifacts,
         }
 
@@ -539,6 +614,7 @@ class MaterialWorkflow:
             quiz_json=_to_filename(artifacts.get("quiz_json")),
             flashcards_json=_to_filename(artifacts.get("flashcards_json")),
             resources_json=_to_filename(artifacts.get("resources_json")),
+            study_material_json=_to_filename(artifacts.get("study_material_json")),
             zip=_to_filename(artifacts.get("zip")),
         )
         job.concept_artifacts = {
@@ -548,6 +624,7 @@ class MaterialWorkflow:
                 quiz_json=_to_filename(artifact_map.get("quiz_json")),
                 flashcards_json=_to_filename(artifact_map.get("flashcards_json")),
                 resources_json=_to_filename(artifact_map.get("resources_json")),
+                study_material_json=_to_filename(artifact_map.get("study_material_json")),
                 zip=_to_filename(artifact_map.get("zip")),
             )
             for concept_id, artifact_map in concept_artifacts.items()

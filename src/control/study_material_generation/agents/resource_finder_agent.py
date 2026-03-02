@@ -62,9 +62,13 @@ class ResourceFinderAgent(BaseStructuredAgent):
                 }
             )
         if not merged:
-            raise ResourceUnavailableError(
-                "ResourceFinderAgent could not produce resources from external search."
-            )
+            fallback = self._fallback_references(concept_name, subject_name)
+            if fallback:
+                merged = fallback
+            else:
+                raise ResourceUnavailableError(
+                    "ResourceFinderAgent could not produce resources from external search."
+                )
         return {"references": merged[:8]}
 
     def _generate_with_llm(self, *, subject_name: str, grade_level: str, concept_name: str) -> list[dict[str, str]]:
