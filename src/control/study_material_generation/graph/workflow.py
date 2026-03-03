@@ -181,6 +181,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
+        print("Updated concept states after pedagogy planning:", updated)
         await self._update_job(job.job_id, progress=34)
         return {
             "job_id": state["job_id"],
