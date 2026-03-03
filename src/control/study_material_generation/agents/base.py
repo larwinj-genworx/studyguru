@@ -13,22 +13,24 @@ from typing import Any
 from src.config.settings import Settings
 
 try:
-    from crewai import Agent, Crew, Process, Task
-except Exception:  # pragma: no cover - optional runtime dependency
-    Agent = Crew = Process = Task = None  # type: ignore[assignment]
-
-try:
-    import litellm  # type: ignore
+    import litellm  
 
     LITELLM_AVAILABLE = True
-except Exception:  # pragma: no cover - optional runtime dependency
-    litellm = None  # type: ignore
+except Exception:  
+    litellm = None  
     LITELLM_AVAILABLE = False
 
 try:
+    from langchain_core.output_parsers import JsonOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+except Exception:
+    JsonOutputParser = None 
+    ChatPromptTemplate = None 
+
+try:
     from langchain_groq import ChatGroq
-except Exception:  # pragma: no cover - optional runtime dependency
-    ChatGroq = None  # type: ignore[assignment]
+except Exception:  
+    ChatGroq = None 
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -55,12 +57,12 @@ class BaseStructuredAgent:
         self._chat_llm = None
         self._chat_llm_json = None
         self._chat_llm_json_disabled = False
-        self._crewai_model = self._normalize_crewai_model(settings.groq_model)
-        self._crewai_disabled = False
-        self._crewai_enabled = settings.enable_crewai_execution
+        self._provider_model = self._normalize_provider_model(settings.groq_model)
+        self._json_prompt = None
+        self._json_parser = None
         self._last_llm_error: str | None = None
         if settings.groq_api:
-            # CrewAI/LiteLLM expects provider-specific env key for Groq.
+            # LiteLLM expects provider-specific env key for Groq.
             os.environ["GROQ_API_KEY"] = settings.groq_api
             os.environ.setdefault("GROQ_API", settings.groq_api)
         if ChatGroq and settings.groq_api:
@@ -97,8 +99,6 @@ class BaseStructuredAgent:
                     if result is None:
                         result = self._run_with_chat(prompt)
                     if result is None:
-                        result = self._run_with_crewai(prompt=prompt, expected_output=expected_output)
-                    if result is None:
                         result = self._run_with_litellm(prompt=prompt)
                 if result is None:
                     raise ValueError("No JSON output returned by model path.")
@@ -126,40 +126,6 @@ class BaseStructuredAgent:
         if not failures:
             failures.append(self._diagnose_missing_llm_paths())
         raise ValueError(f"{self.role} failed to produce valid structured output. {' | '.join(failures)}")
-
-    def _run_with_crewai(self, *, prompt: str, expected_output: str) -> dict[str, Any] | None:
-        if not self._crewai_enabled:
-            return None
-        if self._crewai_disabled:
-            return None
-        if not LITELLM_AVAILABLE:
-            return None
-        if not self._crewai_model or not Agent or not Crew or not Task or not Process:
-            return None
-        try:
-            agent = Agent(
-                role=self.role,
-                goal=self.goal,
-                backstory=self.backstory,
-                llm=self._crewai_model,
-                verbose=False,
-                allow_delegation=False,
-            )
-            task = Task(
-                description=f"{prompt}\nReturn JSON only without markdown fences.",
-                expected_output=expected_output,
-                agent=agent,
-            )
-            crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
-            output = crew.kickoff()
-            raw = getattr(output, "raw", str(output))
-            return self._extract_json(raw)
-        except Exception as exc:
-            # Disable repeated failing CrewAI path and use Groq direct fallback.
-            self._crewai_disabled = True
-            self._last_llm_error = f"CrewAI execution failed: {exc}"
-            logger.warning("[AgentLLM:%s] CrewAI execution failed: %s", self.role, exc)
-            return None
 
     def _run_with_chat(self, prompt: str) -> dict[str, Any] | None:
         if not self._chat_llm:
@@ -198,9 +164,26 @@ class BaseStructuredAgent:
         if not self._chat_llm_json or self._chat_llm_json_disabled:
             return None
         try:
-            response = self._chat_llm_json.invoke(
-                f"{prompt}\n\nReturn only strict JSON. Do not include any extra text."
-            )
+            prompt_template = None
+            if ChatPromptTemplate is not None:
+                if self._json_prompt is None:
+                    self._json_prompt = ChatPromptTemplate.from_messages(
+                        [
+                            (
+                                "user",
+                                "{prompt}\n\nReturn only strict JSON. Do not include any extra text.",
+                            )
+                        ]
+                    )
+                prompt_template = self._json_prompt
+
+            if prompt_template is not None:
+                messages = prompt_template.format_messages(prompt=prompt)
+                response = self._chat_llm_json.invoke(messages)
+            else:
+                response = self._chat_llm_json.invoke(
+                    f"{prompt}\n\nReturn only strict JSON. Do not include any extra text."
+                )
             content = getattr(response, "content", None)
             if isinstance(content, list):
                 content = "".join(
@@ -210,8 +193,21 @@ class BaseStructuredAgent:
             if not isinstance(content, str):
                 content = str(content)
             try:
+                parse_error: Exception | None = None
+                if JsonOutputParser is not None:
+                    try:
+                        if self._json_parser is None:
+                            self._json_parser = JsonOutputParser()
+                        parsed = self._json_parser.parse(content)
+                        if isinstance(parsed, dict):
+                            return parsed
+                        raise ValueError("Parsed JSON output is not an object.")
+                    except Exception as exc:
+                        parse_error = exc
                 return self._extract_json(content)
             except Exception as exc:
+                if parse_error is not None:
+                    exc = ValueError(f"{parse_error}; {exc}")
                 snippet = content.replace("\n", " ").strip()
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
@@ -235,7 +231,7 @@ class BaseStructuredAgent:
             return None
         try:
             response = litellm.completion(
-                model=self._crewai_model,
+                model=self._provider_model,
                 messages=[
                     {"role": "system", "content": "Return JSON only without markdown fences."},
                     {"role": "user", "content": prompt},
@@ -527,13 +523,10 @@ class BaseStructuredAgent:
                 reasons.append("ChatGroq client is unavailable")
         if not LITELLM_AVAILABLE:
             reasons.append("LiteLLM is not installed")
-        if not self._crewai_enabled:
-            reasons.append("CrewAI execution is disabled")
-        if self._crewai_enabled and self._crewai_disabled:
-            reasons.append("CrewAI execution has been disabled after failures")
         return "; ".join(reasons) if reasons else "No model output available from any provider."
+
     @staticmethod
-    def _normalize_crewai_model(model_name: str) -> str:
+    def _normalize_provider_model(model_name: str) -> str:
         normalized = (model_name or "").strip()
         if not normalized:
             return "groq/llama-3.3-70b-versatile"
