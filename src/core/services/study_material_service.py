@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from src.data.models.postgres.models import Concept, ConceptMaterial, Subject
+from src.core.services import learning_content_service
 from src.schemas.study_material import (
     ArtifactIndex,
     ConceptBulkCreate,
@@ -128,6 +129,7 @@ def to_learning_content_response(
     if not isinstance(content_payload, dict):
         content_payload = {}
     content = LearningContent(**content_payload) if content_payload else LearningContent()
+    content = learning_content_service.normalize_learning_content(content)
     return LearningContentResponse(
         concept_id=concept.id,
         concept_name=concept.name,

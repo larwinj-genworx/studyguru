@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
+import shutil
+from pathlib import Path
 
 from fastapi import HTTPException, status
 
+from src.config.settings import get_settings
 from src.core.services import study_material_service, learning_content_service
-from src.data.repositories import study_material_repository
+from src.data.repositories import study_material_repository, material_job_repository
 from src.schemas.study_material import (
     ConceptBulkCreate,
     ConceptMaterialResponse,
@@ -14,10 +18,13 @@ from src.schemas.study_material import (
     LearningContentResponse,
     LearningContentUpdate,
     MaterialLifecycleStatus,
+    JobStatus,
     SubjectCreate,
     SubjectRecord,
     SubjectResponse,
 )
+
+_logger = logging.getLogger("uvicorn.error")
 
 
 async def create_subject(payload: SubjectCreate, owner_id: str) -> SubjectResponse:
@@ -196,6 +203,37 @@ async def unpublish_subject(subject_id: str, owner_id: str) -> SubjectResponse:
     await study_material_repository.update_concepts(concepts)
     await study_material_repository.update_materials(list(latest_materials.values()))
     return study_material_service.to_subject_response(subject, concepts)
+
+
+def _safe_remove_job_outputs(output_root: Path, output_dirs: list[str]) -> None:
+    root = output_root.resolve()
+    for output_dir in output_dirs:
+        if not output_dir or output_dir in (".", ".."):
+            continue
+        target = (output_root / output_dir).resolve()
+        if target == root or not str(target).startswith(str(root)):
+            _logger.warning("Skipping unsafe output path: %s", target)
+            continue
+        try:
+            shutil.rmtree(target, ignore_errors=True)
+        except Exception as exc:
+            _logger.warning("Failed to remove output directory %s: %s", target, exc)
+
+
+async def delete_subject(subject_id: str, owner_id: str) -> None:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    jobs = await material_job_repository.list_jobs(subject_id, owner_id=owner_id)
+    if any(job.status in (JobStatus.queued, JobStatus.running) for job in jobs):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete a subject while generation jobs are running.",
+        )
+    output_dirs = [job.output_dir for job in jobs if job.output_dir]
+    await study_material_repository.delete_subject_data(subject_id)
+    settings = get_settings()
+    _safe_remove_job_outputs(settings.material_output_dir, output_dirs)
 
 
 async def get_admin_concept_learning_content(

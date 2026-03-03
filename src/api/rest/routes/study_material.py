@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 
 from src.api.rest.dependencies import get_current_user, require_role
 from src.core.services import material_job_app_service, study_material_app_service
+from src.core.services import resource_review_app_service
 from src.schemas.study_material import (
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
@@ -13,12 +14,14 @@ from src.schemas.study_material import (
     ConceptBookmarkResponse,
     ConceptMaterialResponse,
     ConceptResponse,
+    ConceptResourcesResponse,
     LearningContentResponse,
     LearningContentUpdate,
     MaterialJobStatusResponse,
     StudentConceptSelection,
     SubjectCreate,
     SubjectResponse,
+    VideoFeedbackRequest,
 )
 
 router = APIRouter(tags=["study-material"])
@@ -74,6 +77,18 @@ async def get_subject(
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
     return await study_material_app_service.get_subject(subject_id, owner_id=current_user["id"])
+
+
+@router.delete(
+    "/admin/subjects/{subject_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def delete_subject(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    await study_material_app_service.delete_subject(subject_id, owner_id=current_user["id"])
 
 
 @router.get(
@@ -261,6 +276,61 @@ async def update_admin_learning_content(
     current_user: dict = Depends(get_current_user),
 ) -> LearningContentResponse:
     return await study_material_app_service.update_admin_concept_learning_content(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        payload=payload,
+        owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/resources",
+    response_model=ConceptResourcesResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def get_admin_concept_resources(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptResourcesResponse:
+    return await resource_review_app_service.get_admin_concept_resources(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/resources/videos/refresh",
+    response_model=ConceptResourcesResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def refresh_admin_concept_video(
+    subject_id: str,
+    concept_id: str,
+    payload: VideoFeedbackRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptResourcesResponse:
+    return await resource_review_app_service.refresh_admin_concept_video(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        payload=payload,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/resources/videos/approve",
+    response_model=ConceptResourcesResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def approve_admin_concept_video(
+    subject_id: str,
+    concept_id: str,
+    payload: VideoFeedbackRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptResourcesResponse:
+    return await resource_review_app_service.approve_admin_concept_video(
         subject_id=subject_id,
         concept_id=concept_id,
         payload=payload,

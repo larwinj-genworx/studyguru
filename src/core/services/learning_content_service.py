@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import re
 from datetime import datetime
 from typing import Any, Iterable
@@ -132,7 +134,10 @@ def build_learning_content(
     if examples:
         example_children: list[LearningSection] = []
         for index, example in enumerate(examples, start=1):
-            steps = _split_example_steps(example)
+            parsed = _parse_example_payload(str(example))
+            steps = parsed["steps"]
+            title = parsed["title"] or f"Example {index}"
+            result = parsed["result"]
             example_children.append(
                 LearningSection(
                     id=_slugify(f"example-{index}"),
@@ -141,8 +146,9 @@ def build_learning_content(
                     blocks=[
                         {
                             "type": "example",
-                            "title": f"Example {index}",
+                            "title": title,
                             "steps": steps,
+                            "result": result,
                         }
                     ],
                     children=[],
@@ -348,11 +354,12 @@ def _split_example_steps(example_text: str) -> list[str]:
         return []
     lines = [line.strip() for line in example_text.splitlines() if line.strip()]
     if len(lines) > 1:
-        return lines[:6]
+        return lines
     sentences = [sentence.strip() for sentence in re.split(r"\.\s+", example_text) if sentence.strip()]
     if len(sentences) > 1:
-        return sentences[:6]
-    return [example_text.strip()]
+        return sentences
+    cleaned = example_text.strip()
+    return [cleaned] if cleaned else []
 
 
 def _build_formula_blocks(
@@ -362,35 +369,174 @@ def _build_formula_blocks(
     blocks: list[dict[str, Any]] = []
     cards = formula_cards or []
     if not cards and fallback_formulas:
-        for formula in fallback_formulas:
-            variables = [{"symbol": symbol, "meaning": "Variable in the formula"} for symbol in _extract_variables(formula)]
+        for index, formula in enumerate(fallback_formulas, start=1):
+            parsed = _parse_formula_payload(str(formula))
+            formula_text = parsed["formula"]
+            variables = parsed["variables"] or [
+                {"symbol": symbol, "meaning": "Variable in the formula"} for symbol in _extract_variables(formula_text)
+            ]
             blocks.append(
                 {
                     "type": "formula",
-                    "formula": formula,
+                    "title": _formula_title(formula_text, variables, index),
+                    "formula": formula_text,
                     "variables": variables,
-                    "explanation": "",
+                    "explanation": parsed["explanation"],
                 }
             )
         return blocks
 
-    for card in cards:
+    for index, card in enumerate(cards, start=1):
         if not isinstance(card, dict):
             continue
-        formula = str(card.get("formula", "")).strip()
+        raw_formula = str(card.get("formula", "")).strip()
+        parsed = _parse_formula_payload(raw_formula)
+        formula = parsed["formula"]
         if not formula:
             continue
-        variables = card.get("variables") or []
+        variables = _normalize_variables(card.get("variables")) or parsed["variables"]
+        explanation = str(card.get("explanation", "")).strip() or parsed["explanation"]
         blocks.append(
             {
                 "type": "formula",
+                "title": _formula_title(formula, variables, index),
                 "formula": formula,
                 "variables": variables,
-                "explanation": str(card.get("explanation", "")).strip(),
+                "explanation": explanation,
                 "example": str(card.get("example", "")).strip(),
             }
         )
     return blocks
+
+
+def normalize_learning_content(content: LearningContent) -> LearningContent:
+    def _normalize_section(section: LearningSection) -> None:
+        for block in section.blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "example":
+                steps = block.get("steps") or []
+                if (
+                    isinstance(steps, list)
+                    and len(steps) == 1
+                    and isinstance(steps[0], str)
+                    and steps[0].strip().startswith(("{", "["))
+                ):
+                    parsed = _parse_example_payload(steps[0])
+                    if parsed["title"]:
+                        block["title"] = parsed["title"]
+                    if parsed["steps"]:
+                        block["steps"] = parsed["steps"]
+                    if parsed["result"]:
+                        block["result"] = parsed["result"]
+            if block.get("type") == "formula":
+                if not block.get("title"):
+                    formula_text = str(block.get("formula", "")).strip()
+                    variables = _normalize_variables(block.get("variables"))
+                    block["title"] = _formula_title(formula_text, variables, 1)
+        for child in section.children:
+            _normalize_section(child)
+
+    for section in content.sections:
+        _normalize_section(section)
+    return content
+
+
+def _parse_structured_text(raw_text: str) -> Any | None:
+    text = raw_text.strip()
+    if not text or not (text.startswith("{") or text.startswith("[")):
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        return ast.literal_eval(text)
+    except Exception:
+        return None
+
+
+def _parse_example_payload(example_text: str) -> dict[str, Any]:
+    parsed = _parse_structured_text(example_text)
+    if isinstance(parsed, dict):
+        title = str(
+            parsed.get("example")
+            or parsed.get("question")
+            or parsed.get("prompt")
+            or parsed.get("title")
+            or ""
+        ).strip()
+        raw_steps = (
+            parsed.get("stepwise_solution")
+            or parsed.get("steps")
+            or parsed.get("solution")
+            or parsed.get("working")
+            or parsed.get("process")
+        )
+        if isinstance(raw_steps, list):
+            steps = [str(item).strip() for item in raw_steps if str(item).strip()]
+        elif isinstance(raw_steps, str):
+            steps = _split_example_steps(raw_steps)
+        else:
+            steps = []
+        result = str(parsed.get("final_answer") or parsed.get("answer") or parsed.get("result") or "").strip()
+        if not steps:
+            steps = _split_example_steps(example_text)
+        return {"title": title, "steps": steps, "result": result}
+    if isinstance(parsed, list):
+        steps = [str(item).strip() for item in parsed if str(item).strip()]
+        return {"title": "", "steps": steps, "result": ""}
+    steps = _split_example_steps(example_text)
+    return {"title": "", "steps": steps, "result": ""}
+
+
+def _parse_formula_payload(formula_text: str) -> dict[str, Any]:
+    parsed = _parse_structured_text(formula_text)
+    if isinstance(parsed, dict):
+        formula = str(
+            parsed.get("formula") or parsed.get("expression") or parsed.get("eqn") or formula_text
+        ).strip()
+        variables = _normalize_variables(parsed.get("variables"))
+        explanation = str(parsed.get("explanation") or parsed.get("note") or "").strip()
+        return {"formula": formula, "variables": variables, "explanation": explanation}
+    return {"formula": formula_text.strip(), "variables": [], "explanation": ""}
+
+
+def _normalize_variables(raw_variables: Any) -> list[dict[str, str]]:
+    if isinstance(raw_variables, dict):
+        cleaned = []
+        for symbol, meaning in raw_variables.items():
+            symbol_text = str(symbol).strip()
+            meaning_text = str(meaning).strip()
+            if symbol_text and meaning_text:
+                cleaned.append({"symbol": symbol_text, "meaning": meaning_text})
+        return cleaned
+    if isinstance(raw_variables, list):
+        cleaned = []
+        for item in raw_variables:
+            if not isinstance(item, dict):
+                continue
+            symbol_text = str(item.get("symbol", "")).strip()
+            meaning_text = str(item.get("meaning", "")).strip()
+            if symbol_text and meaning_text:
+                cleaned.append({"symbol": symbol_text, "meaning": meaning_text})
+        return cleaned
+    return []
+
+
+def _formula_title(formula: str, variables: list[dict[str, str]], index: int) -> str:
+    if not formula:
+        return f"Formula {index}"
+    for delimiter in ("=", "≈", "≃", "≅", "→"):
+        if delimiter in formula:
+            left = formula.split(delimiter, 1)[0].strip()
+            if 1 <= len(left) <= 12:
+                for variable in variables:
+                    if variable.get("symbol") == left and variable.get("meaning"):
+                        return f"{variable['meaning']} Formula"
+                return f"Formula for {left}"
+            break
+    return f"Formula {index}"
 
 
 def _extract_variables(formula: str) -> list[str]:

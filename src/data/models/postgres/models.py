@@ -140,3 +140,12 @@ class ConceptBookmark(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
     concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ConceptVideoFeedback(Base):
+    __tablename__ = "concept_video_feedback"
+
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), primary_key=True)
+    video_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="rejected")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

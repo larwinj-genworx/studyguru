@@ -193,6 +193,25 @@ class ConceptBookmarkResponse(BaseModel):
     created_at: datetime
 
 
+class ResourceItem(BaseModel):
+    title: str
+    url: str
+    note: str | None = None
+
+
+class ConceptResourcesResponse(BaseModel):
+    concept_id: str
+    concept_name: str
+    subject_id: str
+    subject_name: str
+    resources: list[ResourceItem] = Field(default_factory=list)
+    approved_video_id: str | None = None
+
+
+class VideoFeedbackRequest(BaseModel):
+    url: str
+
+
 LearningSection.model_rebuild()
 
 

@@ -51,6 +51,20 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_concept_materials_content_text_fts ON concept_materials USING GIN (to_tsvector('english', content_text))",
         ],
     ),
+    (
+        "20260302_add_concept_video_feedback",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS concept_video_feedback (
+                concept_id VARCHAR(32) NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+                video_id VARCHAR(32) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'rejected',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (concept_id, video_id)
+            )
+            """
+        ],
+    ),
 ]
 
 

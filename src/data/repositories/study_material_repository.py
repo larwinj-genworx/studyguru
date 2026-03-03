@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from datetime import datetime, timezone
 
 from src.data.clients.postgres import AsyncSessionFactory
-from src.data.models.postgres.models import Concept, ConceptMaterial, Subject, ConceptBookmark
+from src.data.models.postgres.models import (
+    Concept,
+    ConceptBookmark,
+    ConceptMaterial,
+    ConceptVideoFeedback,
+    MaterialJob,
+    MaterialJobConcept,
+    Subject,
+)
 from src.schemas.study_material import MaterialLifecycleStatus
 
 
@@ -195,3 +203,75 @@ async def delete_bookmark(user_id: str, concept_id: str) -> None:
             )
             if row:
                 await session.delete(row)
+
+
+async def list_video_feedback(concept_id: str, status: str | None = None) -> list[ConceptVideoFeedback]:
+    async with AsyncSessionFactory() as session:
+        stmt = select(ConceptVideoFeedback).where(ConceptVideoFeedback.concept_id == concept_id)
+        if status:
+            stmt = stmt.where(ConceptVideoFeedback.status == status)
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+
+async def upsert_video_feedback(concept_id: str, video_id: str, status: str) -> ConceptVideoFeedback:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            row = await session.get(
+                ConceptVideoFeedback,
+                {"concept_id": concept_id, "video_id": video_id},
+            )
+            if row:
+                row.status = status
+                return row
+            row = ConceptVideoFeedback(
+                concept_id=concept_id,
+                video_id=video_id,
+                status=status,
+            )
+            session.add(row)
+            return row
+
+
+async def delete_subject_data(subject_id: str) -> None:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            concept_rows = await session.execute(
+                select(Concept.id).where(Concept.subject_id == subject_id)
+            )
+            concept_ids = [row[0] for row in concept_rows.fetchall()]
+
+            job_rows = await session.execute(
+                select(MaterialJob.id).where(MaterialJob.subject_id == subject_id)
+            )
+            job_ids = [row[0] for row in job_rows.fetchall()]
+
+            if job_ids:
+                await session.execute(
+                    delete(ConceptMaterial).where(ConceptMaterial.source_job_id.in_(job_ids))
+                )
+
+            if concept_ids:
+                await session.execute(
+                    delete(ConceptBookmark).where(ConceptBookmark.concept_id.in_(concept_ids))
+                )
+                await session.execute(
+                    delete(ConceptVideoFeedback).where(ConceptVideoFeedback.concept_id.in_(concept_ids))
+                )
+                await session.execute(
+                    delete(MaterialJobConcept).where(MaterialJobConcept.concept_id.in_(concept_ids))
+                )
+                await session.execute(
+                    delete(ConceptMaterial).where(ConceptMaterial.concept_id.in_(concept_ids))
+                )
+                await session.execute(delete(Concept).where(Concept.id.in_(concept_ids)))
+
+            await session.execute(delete(ConceptMaterial).where(ConceptMaterial.subject_id == subject_id))
+
+            if job_ids:
+                await session.execute(
+                    delete(MaterialJobConcept).where(MaterialJobConcept.job_id.in_(job_ids))
+                )
+                await session.execute(delete(MaterialJob).where(MaterialJob.id.in_(job_ids)))
+
+            await session.execute(delete(Subject).where(Subject.id == subject_id))
