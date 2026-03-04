@@ -131,7 +131,10 @@ def build_learning_content(
             )
         )
 
-    if examples:
+    practical_required = True
+    if core is not None:
+        practical_required = bool(getattr(core, "practical_examples_required", True))
+    if examples and practical_required:
         example_children: list[LearningSection] = []
         for index, example in enumerate(examples, start=1):
             parsed = _parse_example_payload(str(example))
@@ -307,12 +310,94 @@ def _split_paragraphs(text: str) -> list[str]:
     return paragraphs
 
 
+def _split_long_paragraph(text: str) -> list[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", cleaned) if sentence.strip()]
+    if len(sentences) <= 2 and len(cleaned) <= 260:
+        return [cleaned]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if not current:
+            current = sentence
+            continue
+        if len(current) + len(sentence) + 1 <= 260:
+            current = f"{current} {sentence}"
+        else:
+            chunks.append(current)
+            current = sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_text_blocks(text: str) -> list[dict[str, Any]]:
+    if not text:
+        return []
+    lines = text.splitlines()
+    blocks: list[dict[str, Any]] = []
+    paragraph_lines: list[str] = []
+    list_items: list[str] = []
+    list_style: str | None = None
+
+    def _flush_paragraph() -> None:
+        if not paragraph_lines:
+            return
+        paragraph = " ".join(line.strip() for line in paragraph_lines if line.strip()).strip()
+        paragraph_lines.clear()
+        for chunk in _split_long_paragraph(paragraph):
+            blocks.append({"type": "paragraph", "text": chunk})
+
+    def _flush_list() -> None:
+        nonlocal list_style
+        if list_items:
+            blocks.append({"type": "list", "style": list_style or "bullet", "items": list_items.copy()})
+            list_items.clear()
+        list_style = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            _flush_paragraph()
+            _flush_list()
+            continue
+        number_match = re.match(r"^(\d+)[\.\)]\s+(.*)$", stripped)
+        if number_match:
+            _flush_paragraph()
+            if list_style not in (None, "number"):
+                _flush_list()
+            list_style = "number"
+            item = number_match.group(2).strip()
+            if item:
+                list_items.append(item)
+            continue
+        bullet_match = re.match(r"^[\-\*\u2022]\s+(.*)$", stripped)
+        if bullet_match:
+            _flush_paragraph()
+            if list_style not in (None, "bullet"):
+                _flush_list()
+            list_style = "bullet"
+            item = bullet_match.group(1).strip()
+            if item:
+                list_items.append(item)
+            continue
+        if list_items:
+            _flush_list()
+        paragraph_lines.append(stripped)
+
+    _flush_paragraph()
+    _flush_list()
+    return blocks
+
+
 def _split_text_with_code(text: str) -> list[dict[str, Any]]:
     if not text:
         return []
     blocks: list[dict[str, Any]] = []
     if "```" not in text:
-        return [{"type": "paragraph", "text": paragraph} for paragraph in _split_paragraphs(text)]
+        return _split_text_blocks(text)
 
     parts = text.split("```")
     for index, part in enumerate(parts):
@@ -329,8 +414,7 @@ def _split_text_with_code(text: str) -> list[dict[str, Any]]:
             if code:
                 blocks.append({"type": "code", "language": language, "code": code})
         else:
-            for paragraph in _split_paragraphs(part):
-                blocks.append({"type": "paragraph", "text": paragraph})
+            blocks.extend(_split_text_blocks(part))
     return blocks
 
 
@@ -473,15 +557,35 @@ def _parse_example_payload(example_text: str) -> dict[str, Any]:
             or parsed.get("working")
             or parsed.get("process")
         )
+        description = parsed.get("description") or parsed.get("explanation") or parsed.get("context")
         if isinstance(raw_steps, list):
             steps = [str(item).strip() for item in raw_steps if str(item).strip()]
         elif isinstance(raw_steps, str):
             steps = _split_example_steps(raw_steps)
         else:
             steps = []
+        if description:
+            description_steps = _split_example_steps(str(description))
+            if description_steps:
+                if steps:
+                    steps = [*description_steps, *steps]
+                else:
+                    steps = description_steps
         result = str(parsed.get("final_answer") or parsed.get("answer") or parsed.get("result") or "").strip()
         if not steps:
             steps = _split_example_steps(example_text)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for step in steps:
+            cleaned = str(step).strip()
+            if not cleaned:
+                continue
+            normalized = re.sub(r"\s+", " ", cleaned.lower()).strip()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(cleaned)
+        steps = deduped
         return {"title": title, "steps": steps, "result": result}
     if isinstance(parsed, list):
         steps = [str(item).strip() for item in parsed if str(item).strip()]

@@ -9,6 +9,7 @@ from src.core.services import resource_review_app_service
 from src.schemas.study_material import (
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
+    AdminMaterialPublishRequest,
     AdminMaterialRegenerateRequest,
     ConceptBulkCreate,
     ConceptBookmarkResponse,
@@ -86,9 +87,14 @@ async def get_subject(
 )
 async def delete_subject(
     subject_id: str,
+    force: bool = False,
     current_user: dict = Depends(get_current_user),
 ) -> None:
-    await study_material_app_service.delete_subject(subject_id, owner_id=current_user["id"])
+    await study_material_app_service.delete_subject(
+        subject_id,
+        owner_id=current_user["id"],
+        force=force,
+    )
 
 
 @router.get(
@@ -233,6 +239,23 @@ async def publish_subject(
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
     return await study_material_app_service.publish_subject(subject_id, owner_id=current_user["id"])
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/publish/concepts",
+    response_model=SubjectResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def publish_selected_concepts(
+    subject_id: str,
+    payload: AdminMaterialPublishRequest,
+    current_user: dict = Depends(get_current_user),
+) -> SubjectResponse:
+    return await study_material_app_service.publish_selected_concepts(
+        subject_id,
+        concept_ids=payload.concept_ids,
+        owner_id=current_user["id"],
+    )
 
 
 @router.post(

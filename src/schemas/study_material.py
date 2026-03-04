@@ -62,6 +62,10 @@ class AdminMaterialApproveRequest(BaseModel):
     approval_note: str | None = Field(default=None, max_length=500)
 
 
+class AdminMaterialPublishRequest(BaseModel):
+    concept_ids: list[str] = Field(min_length=1, max_length=30)
+
+
 class StudentConceptSelection(BaseModel):
     concept_ids: list[str] = Field(min_length=1, max_length=30)
 
@@ -171,6 +175,7 @@ class ConceptContentPack(BaseModel):
     flashcards: list[dict[str, str]]
     references: list[dict[str, str]]
     recap: list[str]
+    practical_examples_required: bool = True
 
 
 class ConceptMaterialRecord(BaseModel):

@@ -82,6 +82,28 @@ def apply_publish(
             concept.material_version = material.version
 
 
+def apply_publish_selected(
+    subject: Subject,
+    concepts: list[Concept],
+    latest_materials: dict[str, ConceptMaterial],
+    publish_time: datetime,
+) -> None:
+    subject.published = True
+    subject.updated_at = publish_time
+    concept_map = {concept.id: concept for concept in concepts}
+    for concept_id, material in latest_materials.items():
+        concept = concept_map.get(concept_id)
+        if not concept:
+            continue
+        if material.lifecycle_status != MaterialLifecycleStatus.published:
+            material.lifecycle_status = MaterialLifecycleStatus.published
+        if material.published_at is None:
+            material.published_at = publish_time
+        if concept.material_status != MaterialLifecycleStatus.published:
+            concept.material_status = MaterialLifecycleStatus.published
+        concept.material_version = material.version
+
+
 def to_concept_response(concept: Concept) -> ConceptResponse:
     return ConceptResponse(
         concept_id=concept.id,
