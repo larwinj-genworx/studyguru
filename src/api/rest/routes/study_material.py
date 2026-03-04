@@ -86,9 +86,14 @@ async def get_subject(
 )
 async def delete_subject(
     subject_id: str,
+    force: bool = False,
     current_user: dict = Depends(get_current_user),
 ) -> None:
-    await study_material_app_service.delete_subject(subject_id, owner_id=current_user["id"])
+    await study_material_app_service.delete_subject(
+        subject_id,
+        owner_id=current_user["id"],
+        force=force,
+    )
 
 
 @router.get(

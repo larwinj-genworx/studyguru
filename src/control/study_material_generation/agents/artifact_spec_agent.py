@@ -86,4 +86,5 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             flashcards=flashcards[:15],
             references=references[:8],
             recap=recap,
+            practical_examples_required=practical_required,
         )

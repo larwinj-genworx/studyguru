@@ -220,12 +220,12 @@ def _safe_remove_job_outputs(output_root: Path, output_dirs: list[str]) -> None:
             _logger.warning("Failed to remove output directory %s: %s", target, exc)
 
 
-async def delete_subject(subject_id: str, owner_id: str) -> None:
+async def delete_subject(subject_id: str, owner_id: str, force: bool = False) -> None:
     subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
     if not subject:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
     jobs = await material_job_repository.list_jobs(subject_id, owner_id=owner_id)
-    if any(job.status in (JobStatus.queued, JobStatus.running) for job in jobs):
+    if any(job.status in (JobStatus.queued, JobStatus.running) for job in jobs) and not force:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete a subject while generation jobs are running.",

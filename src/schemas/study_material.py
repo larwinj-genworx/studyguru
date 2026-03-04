@@ -171,6 +171,7 @@ class ConceptContentPack(BaseModel):
     flashcards: list[dict[str, str]]
     references: list[dict[str, str]]
     recap: list[str]
+    practical_examples_required: bool = True
 
 
 class ConceptMaterialRecord(BaseModel):
