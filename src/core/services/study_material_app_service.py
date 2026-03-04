@@ -147,6 +147,56 @@ async def query_selected_concept_materials(
     return [published_materials[concept_id] for concept_id in concept_ids]
 
 
+async def publish_selected_concepts(
+    subject_id: str,
+    concept_ids: list[str],
+    owner_id: str,
+) -> SubjectResponse:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    if not concept_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Select at least one concept to publish.",
+        )
+    concepts = await study_material_repository.list_concepts(subject_id)
+    concept_map = {concept.id: concept for concept in concepts}
+    unique_ids = list(dict.fromkeys(concept_ids))
+    selected: list = []
+    invalid_ids: list[str] = []
+    for concept_id in unique_ids:
+        concept = concept_map.get(concept_id)
+        if not concept:
+            invalid_ids.append(concept_id)
+            continue
+        selected.append(concept)
+    if invalid_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid concept IDs: {invalid_ids}",
+        )
+    latest_materials = await study_material_repository.get_latest_materials(
+        [concept.id for concept in selected]
+    )
+    missing = study_material_service.ensure_publishable(selected, latest_materials)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Cannot publish until all selected concepts have approved materials. "
+                f"Missing approvals for: {missing}"
+            ),
+        )
+    publish_time = datetime.now(timezone.utc)
+    study_material_service.apply_publish_selected(subject, selected, latest_materials, publish_time)
+    await study_material_repository.update_subject(subject)
+    await study_material_repository.update_concepts(selected)
+    await study_material_repository.update_materials(list(latest_materials.values()))
+    refreshed_concepts = await study_material_repository.list_concepts(subject_id)
+    return study_material_service.to_subject_response(subject, refreshed_concepts)
+
+
 async def publish_subject(subject_id: str, owner_id: str) -> SubjectResponse:
     subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
     if not subject:
