@@ -113,6 +113,25 @@ async def list_admin_subject_materials(
     )
 
 
+@router.get(
+    "/admin/subjects/{subject_id}/approved-materials.zip",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def download_approved_materials_bundle(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> FileResponse:
+    bundle_path = await study_material_app_service.get_approved_subject_bundle_path(
+        subject_id=subject_id,
+        owner_id=current_user["id"],
+    )
+    return FileResponse(
+        path=str(bundle_path),
+        filename=bundle_path.name,
+        media_type="application/zip",
+    )
+
+
 @router.post(
     "/admin/material-jobs",
     response_model=MaterialJobStatusResponse,
@@ -175,6 +194,23 @@ async def approve_material_job(
     current_user: dict = Depends(get_current_user),
 ) -> MaterialJobStatusResponse:
     return await material_job_app_service.approve_job(job_id, payload, owner_id=current_user["id"])
+
+
+@router.delete(
+    "/admin/material-jobs/{job_id}/concepts/{concept_id}",
+    response_model=MaterialJobStatusResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def discard_material_job_concept(
+    job_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> MaterialJobStatusResponse:
+    return await material_job_app_service.discard_job_concept(
+        job_id=job_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
 
 
 @router.get(

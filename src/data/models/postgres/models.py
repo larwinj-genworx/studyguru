@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Float, String, Text, UniqueConstraint, Index, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.data.models.postgres.base import Base, utc_now
 from src.schemas.study_material import JobStatus, MaterialLifecycleStatus, ReviewStatus
+from src.schemas.quiz import QuizSessionStatus
 
 
 class User(Base):
@@ -149,3 +150,65 @@ class ConceptVideoFeedback(Base):
     video_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     status: Mapped[str] = mapped_column(String(20), default="rejected")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class QuizQuestion(Base):
+    __tablename__ = "quiz_questions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id"), index=True, nullable=False)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), index=True, nullable=False)
+    material_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    options: Mapped[list] = mapped_column(JSONB, default=list)
+    correct_option: Mapped[str] = mapped_column(Text, nullable=False)
+    hints: Mapped[list] = mapped_column(JSONB, default=list)
+    explanation: Mapped[str | None] = mapped_column(Text, default=None)
+    difficulty: Mapped[str] = mapped_column(String(20), default="medium")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class QuizSession(Base):
+    __tablename__ = "quiz_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id"), index=True, nullable=False)
+    status: Mapped[QuizSessionStatus] = mapped_column(
+        SAEnum(QuizSessionStatus, name="quiz_session_status", native_enum=False),
+        default=QuizSessionStatus.in_progress,
+    )
+    concept_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    question_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    current_index: Mapped[int] = mapped_column(Integer, default=0)
+    total_questions: Mapped[int] = mapped_column(Integer, default=0)
+    correct_count: Mapped[int] = mapped_column(Integer, default=0)
+    incorrect_count: Mapped[int] = mapped_column(Integer, default=0)
+    score_percent: Mapped[float | None] = mapped_column(Float, default=None)
+    session_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    report: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class QuizResponse(Base):
+    __tablename__ = "quiz_responses"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    session_id: Mapped[str] = mapped_column(ForeignKey("quiz_sessions.id"), nullable=False)
+    question_id: Mapped[str] = mapped_column(ForeignKey("quiz_questions.id"), nullable=False)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), nullable=False)
+    selected_option: Mapped[str | None] = mapped_column(Text, default=None)
+    is_correct: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    hints_used: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_log: Mapped[list] = mapped_column(JSONB, default=list)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "question_id", name="uq_quiz_session_question"),
+    )
