@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
+from zipfile import ZIP_DEFLATED, ZipFile
 import logging
 import shutil
 from pathlib import Path
@@ -25,6 +27,21 @@ from src.schemas.study_material import (
 )
 
 _logger = logging.getLogger("uvicorn.error")
+
+
+_BUNDLE_ARTIFACT_FIELDS = (
+    "pdf",
+    "quick_revision_pdf",
+    "quiz_json",
+    "flashcards_json",
+    "resources_json",
+    "study_material_json",
+)
+
+
+def _slugify(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", value or "").strip("-").lower()
+    return cleaned or "concept"
 
 
 async def create_subject(payload: SubjectCreate, owner_id: str) -> SubjectResponse:
@@ -145,6 +162,67 @@ async def query_selected_concept_materials(
             detail=f"Published material not available for concept IDs: {missing}",
         )
     return [published_materials[concept_id] for concept_id in concept_ids]
+
+
+async def get_approved_subject_bundle_path(subject_id: str, owner_id: str) -> Path:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    concepts = await study_material_repository.list_concepts(subject_id)
+    if not concepts:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No concepts found.")
+    latest_materials = await study_material_repository.get_latest_materials(
+        [concept.id for concept in concepts]
+    )
+    approved_materials = {
+        concept_id: material
+        for concept_id, material in latest_materials.items()
+        if material.lifecycle_status
+        in (MaterialLifecycleStatus.approved, MaterialLifecycleStatus.published)
+    }
+    if not approved_materials:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No approved materials available.",
+        )
+    concept_name_map = {concept.id: concept.name for concept in concepts}
+    settings = get_settings()
+    bundle_dir = settings.material_output_dir / "approved_bundles" / subject_id
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = bundle_dir / "approved_materials.zip"
+    added = 0
+    with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
+        for concept_id, material in approved_materials.items():
+            job = await material_job_repository.get_job(material.source_job_id)
+            if not job or not job.output_dir:
+                continue
+            artifact_index = study_material_service.artifact_index_from_json(
+                material.artifact_index
+            )
+            concept_name = concept_name_map.get(concept_id, concept_id)
+            concept_slug = _slugify(concept_name)
+            folder = f"{concept_slug}-{concept_id[:6]}"
+            for field in _BUNDLE_ARTIFACT_FIELDS:
+                filename = getattr(artifact_index, field, None)
+                if not filename:
+                    continue
+                file_path = (
+                    settings.material_output_dir
+                    / job.output_dir
+                    / "concepts"
+                    / concept_id
+                    / filename
+                )
+                if not file_path.exists():
+                    continue
+                zf.write(file_path, arcname=f"{folder}/{filename}")
+                added += 1
+    if not added:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approved material files are missing.",
+        )
+    return bundle_path
 
 
 async def publish_selected_concepts(

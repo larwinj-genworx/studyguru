@@ -169,6 +169,19 @@ async def update_materials(materials: list[ConceptMaterial]) -> None:
                 db_material.updated_at = datetime.now(timezone.utc)
 
 
+async def delete_materials_for_job(job_id: str, concept_ids: list[str]) -> None:
+    if not concept_ids:
+        return
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            await session.execute(
+                delete(ConceptMaterial).where(
+                    ConceptMaterial.source_job_id == job_id,
+                    ConceptMaterial.concept_id.in_(concept_ids),
+                )
+            )
+
+
 async def list_bookmarks(user_id: str, subject_id: str | None = None) -> list[ConceptBookmark]:
     async with AsyncSessionFactory() as session:
         stmt = select(ConceptBookmark).where(ConceptBookmark.user_id == user_id)

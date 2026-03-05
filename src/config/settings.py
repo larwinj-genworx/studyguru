@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     resource_validation_timeout_seconds: int = Field(default=4, alias="RESOURCE_VALIDATION_TIMEOUT_SECONDS")
     allow_resourceless_generation: bool = Field(default=True, alias="ALLOW_RESOURCELESS_GENERATION")
 
+    quiz_min_questions: int = Field(default=10, alias="QUIZ_MIN_QUESTIONS")
+    quiz_max_questions: int = Field(default=30, alias="QUIZ_MAX_QUESTIONS")
+    quiz_base_questions: int = Field(default=8, alias="QUIZ_BASE_QUESTIONS")
+    quiz_per_topic_questions: int = Field(default=2, alias="QUIZ_PER_TOPIC_QUESTIONS")
+    quiz_complexity_multiplier: float = Field(default=0.6, alias="QUIZ_COMPLEXITY_MULTIPLIER")
+    quiz_bank_buffer: int = Field(default=2, alias="QUIZ_BANK_BUFFER")
+    quiz_max_hints: int = Field(default=3, alias="QUIZ_MAX_HINTS")
+
     postgres_url: str = Field(default="", alias="POSTGRES_URL")
     postgres_db: str = Field(default="postgres", alias="POSTGRES_DB")
     postgres_user: str = Field(default="postgres", alias="POSTGRES_USER")
