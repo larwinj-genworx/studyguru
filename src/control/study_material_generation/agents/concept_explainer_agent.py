@@ -23,13 +23,21 @@ class ConceptExplainerAgent(BaseStructuredAgent):
         coverage_map: dict[str, Any],
         teaching_plan: dict[str, Any],
         revision_feedback: str | None,
+        evidence_pack: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        evidence_text = self.format_evidence_pack(
+            evidence_pack,
+            max_sources=4,
+            max_snippets=6,
+            max_chars_per_snippet=240,
+        )
         prompt = (
             f"Concept: {concept_name}\n"
             f"Grade Level: {grade_level}\n"
             f"Coverage: {coverage_map}\n"
             f"Teaching Plan: {teaching_plan}\n"
-            f"Revision Feedback: {revision_feedback or 'None'}\n\n"
+            f"Revision Feedback: {revision_feedback or 'None'}\n"
+            f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with keys: definition (string), intuition (string), formulas (list), "
             "key_steps (list), common_mistakes (list), recap (list), "
             "practical_examples_required (boolean). "
@@ -38,6 +46,8 @@ class ConceptExplainerAgent(BaseStructuredAgent):
             "Formulas: include only if the concept truly uses equations/formulae; otherwise return an empty list. "
             "Set practical_examples_required to false only when the concept is purely theoretical "
             "and does not lend itself to realistic practical examples. "
+            "Use the evidence pack as the factual grounding. If the evidence is thin, keep wording careful and avoid unsupported claims. "
+            "Do not reject uncommon topics; instead explain the exact topic in a simplified, grade-appropriate way. "
             "If Revision Feedback is provided, fix those issues first. "
             "Strict rule: explanation must remain fully concept-specific and should not mention unrelated topics. "
             "Output JSON only without markdown fences."
@@ -64,6 +74,12 @@ class ConceptExplainerAgent(BaseStructuredAgent):
         def _word_count(text: str) -> int:
             return len(text.split())
 
+        def _limit_words(text: str, max_words: int) -> str:
+            words = text.split()
+            if len(words) <= max_words:
+                return text
+            return " ".join(words[:max_words]).strip()
+
         def _ensure_definition_min_words(
             text: str,
             *,
@@ -78,10 +94,7 @@ class ConceptExplainerAgent(BaseStructuredAgent):
             if objectives:
                 trimmed = [obj.strip().rstrip(".") for obj in objectives if obj.strip()]
                 if trimmed:
-                    focus = "; ".join(trimmed[:2])
-                    additions.append(
-                        f"At this level, students should be able to {focus}."
-                    )
+                    additions.append(f"At this level, students should be able to {'; '.join(trimmed[:2])}.")
             if steps:
                 lead_step = steps[0].strip().rstrip(".")
                 if lead_step:
@@ -109,12 +122,6 @@ class ConceptExplainerAgent(BaseStructuredAgent):
                 if normalized in {"true", "yes", "1", "required"}:
                     return True
             return default
-
-        def _limit_words(text: str, max_words: int) -> str:
-            words = text.split()
-            if len(words) <= max_words:
-                return text
-            return " ".join(words[:max_words]).strip()
 
         objectives = self.to_list(coverage_map.get("objectives"), [])
         definition = _ensure_definition_min_words(

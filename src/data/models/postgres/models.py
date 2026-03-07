@@ -156,8 +156,16 @@ class QuizQuestion(Base):
     __tablename__ = "quiz_questions"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
-    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id"), index=True, nullable=False)
-    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), index=True, nullable=False)
+    subject_id: Mapped[str | None] = mapped_column(
+        ForeignKey("subjects.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    concept_id: Mapped[str | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     material_version: Mapped[int] = mapped_column(Integer, nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     options: Mapped[list] = mapped_column(JSONB, default=list)
@@ -174,7 +182,11 @@ class QuizSession(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id"), index=True, nullable=False)
+    subject_id: Mapped[str | None] = mapped_column(
+        ForeignKey("subjects.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     status: Mapped[QuizSessionStatus] = mapped_column(
         SAEnum(QuizSessionStatus, name="quiz_session_status", native_enum=False),
         default=QuizSessionStatus.in_progress,
@@ -199,7 +211,10 @@ class QuizResponse(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
     session_id: Mapped[str] = mapped_column(ForeignKey("quiz_sessions.id"), nullable=False)
     question_id: Mapped[str] = mapped_column(ForeignKey("quiz_questions.id"), nullable=False)
-    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), nullable=False)
+    concept_id: Mapped[str | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     selected_option: Mapped[str | None] = mapped_column(Text, default=None)
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

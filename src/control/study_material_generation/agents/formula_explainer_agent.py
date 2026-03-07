@@ -22,18 +22,27 @@ class FormulaExplainerAgent(BaseStructuredAgent):
         concept_name: str,
         grade_level: str,
         formulas: list[str],
+        evidence_pack: dict[str, Any] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         cleaned_formulas = [str(item).strip() for item in formulas if str(item).strip()]
         if not cleaned_formulas:
             return {"formula_cards": []}
+        evidence_text = self.format_evidence_pack(
+            evidence_pack,
+            max_sources=3,
+            max_snippets=4,
+            max_chars_per_snippet=220,
+        )
 
         prompt = (
             f"Concept: {concept_name}\n"
             f"Grade Level: {grade_level}\n"
-            f"Formulas: {cleaned_formulas}\n\n"
+            f"Formulas: {cleaned_formulas}\n"
+            f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with key: formula_cards (list). "
             "Each item must include: formula (string), variables (list of {symbol, meaning}), "
             "explanation (string, 1-2 sentences), example (string, optional). "
+            "Keep explanations grounded in the evidence pack and avoid inventing unsupported formulas. "
             "Keep variable meanings concise and aligned to the concept. "
             "Output JSON only without markdown fences."
         )

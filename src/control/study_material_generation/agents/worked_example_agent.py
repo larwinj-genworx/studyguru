@@ -20,15 +20,24 @@ class WorkedExampleAgent(BaseStructuredAgent):
         key_steps: list[str],
         revision_feedback: str | None,
         practical_examples_required: bool = True,
+        evidence_pack: dict | None = None,
     ) -> dict[str, list[str]]:
         if not practical_examples_required:
             return {"examples": []}
+        evidence_text = self.format_evidence_pack(
+            evidence_pack,
+            max_sources=4,
+            max_snippets=5,
+            max_chars_per_snippet=220,
+        )
         prompt = (
             f"Concept: {concept_name}\n"
             f"Key Steps: {key_steps}\n"
-            f"Revision Feedback: {revision_feedback or 'None'}\n\n"
+            f"Revision Feedback: {revision_feedback or 'None'}\n"
+            f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with key: examples (list). Include 4 to 6 practical, real-world worked examples "
             "(2-4 sentences each) with clear steps or calculations when relevant. "
+            "Base the examples on the evidence pack and stay mathematically consistent with the grounded explanation. "
             "If Revision Feedback is provided, fix those issues first. "
             "Strict rule: each example must explicitly belong to this concept only. "
             "Output JSON only without markdown fences."

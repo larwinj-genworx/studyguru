@@ -23,16 +23,25 @@ class SyllabusInterpreterAgent(BaseStructuredAgent):
         concept_name: str,
         concept_description: str | None,
         learner_profile: str | None,
+        evidence_pack: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        evidence_text = self.format_evidence_pack(
+            evidence_pack,
+            max_sources=3,
+            max_snippets=4,
+            max_chars_per_snippet=220,
+        )
         prompt = (
             f"Subject: {subject_name}\n"
             f"Grade Level: {grade_level}\n"
             f"Concept: {concept_name}\n"
             f"Concept Description: {concept_description or 'N/A'}\n"
-            f"Learner Profile: {learner_profile or 'General classroom learner'}\n\n"
+            f"Learner Profile: {learner_profile or 'General classroom learner'}\n"
+            f"Evidence Pack:\n{evidence_text}\n\n"
             "Create a concise coverage map with keys: objectives (list), prerequisites (list), misconceptions (list). "
-            "Keep outputs simple and student-friendly. "
-            "Strict rule: output must be only for this exact concept and grade level; do not include unrelated concepts."
+            "Ground the output in the evidence pack when available. "
+            "Do not reject uncommon topics. If the topic is advanced or unusual for the grade, still create a simplified, teachable scope for this exact topic at this grade level. "
+            "Keep outputs simple, student-friendly, and fully tied to this concept only."
         )
         data = self.run_json_task(
             prompt,

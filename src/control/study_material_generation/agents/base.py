@@ -541,3 +541,87 @@ class BaseStructuredAgent:
             if cleaned:
                 return cleaned
         return default
+
+    @staticmethod
+    def format_evidence_pack(
+        evidence_pack: dict[str, Any] | None,
+        *,
+        max_sources: int = 4,
+        max_snippets: int = 6,
+        max_chars_per_snippet: int = 320,
+    ) -> str:
+        if not isinstance(evidence_pack, dict) or not evidence_pack:
+            return "No external evidence available."
+
+        lines: list[str] = []
+        retrieval_status = str(evidence_pack.get("retrieval_status", "unknown")).strip() or "unknown"
+        coverage_summary = str(evidence_pack.get("coverage_summary", "")).strip()
+        if coverage_summary:
+            lines.append(f"Evidence Summary: {coverage_summary}")
+        lines.append(f"Retrieval Status: {retrieval_status}")
+
+        source_documents = evidence_pack.get("source_documents") or []
+        if isinstance(source_documents, list) and source_documents:
+            lines.append("Source Documents:")
+            for item in source_documents[:max_sources]:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title", "Resource")).strip()
+                domain = str(item.get("domain", "")).strip()
+                url = str(item.get("url", "")).strip()
+                quality = item.get("quality_score")
+                quality_text = f"{float(quality):.2f}" if isinstance(quality, (int, float)) else "n/a"
+                lines.append(
+                    f"- {title} | domain={domain or 'unknown'} | quality={quality_text} | url={url}"
+                )
+
+        evidence_snippets = evidence_pack.get("evidence_snippets") or []
+        if isinstance(evidence_snippets, list) and evidence_snippets:
+            lines.append("Evidence Snippets:")
+            for item in evidence_snippets[:max_snippets]:
+                if not isinstance(item, dict):
+                    continue
+                source_title = str(item.get("source_title", "Resource")).strip()
+                snippet_type = str(item.get("snippet_type", "content")).strip()
+                text = str(item.get("text", "")).strip()
+                if len(text) > max_chars_per_snippet:
+                    text = f"{text[:max_chars_per_snippet].rstrip()}..."
+                lines.append(f"- [{snippet_type}] {source_title}: {text}")
+
+        return "\n".join(lines).strip() or "No external evidence available."
+
+    @staticmethod
+    def build_grounding_metadata(
+        evidence_pack: dict[str, Any] | None,
+        *,
+        max_sources: int = 6,
+    ) -> dict[str, Any]:
+        if not isinstance(evidence_pack, dict) or not evidence_pack:
+            return {
+                "retrieval_status": "fallback",
+                "source_count": 0,
+                "queries": [],
+                "sources": [],
+            }
+
+        sources = []
+        for item in evidence_pack.get("source_documents") or []:
+            if not isinstance(item, dict):
+                continue
+            sources.append(
+                {
+                    "title": str(item.get("title", "Resource")).strip()[:160],
+                    "url": str(item.get("url", "")).strip(),
+                    "domain": str(item.get("domain", "")).strip(),
+                    "quality_score": item.get("quality_score"),
+                }
+            )
+            if len(sources) >= max_sources:
+                break
+        return {
+            "retrieval_status": str(evidence_pack.get("retrieval_status", "unknown")).strip() or "unknown",
+            "source_count": len(sources),
+            "queries": [str(item).strip() for item in (evidence_pack.get("query_variants") or []) if str(item).strip()][:6],
+            "sources": sources,
+            "retrieved_at": str(evidence_pack.get("retrieved_at", "")).strip(),
+        }
