@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     resource_search_timeout_seconds: int = Field(default=8, alias="RESOURCE_SEARCH_TIMEOUT_SECONDS")
     resource_validation_timeout_seconds: int = Field(default=4, alias="RESOURCE_VALIDATION_TIMEOUT_SECONDS")
     allow_resourceless_generation: bool = Field(default=True, alias="ALLOW_RESOURCELESS_GENERATION")
+    evidence_search_results_per_query: int = Field(default=3, alias="EVIDENCE_SEARCH_RESULTS_PER_QUERY")
+    evidence_max_sources: int = Field(default=6, alias="EVIDENCE_MAX_SOURCES")
+    evidence_max_snippets: int = Field(default=10, alias="EVIDENCE_MAX_SNIPPETS")
 
     quiz_min_questions: int = Field(default=10, alias="QUIZ_MIN_QUESTIONS")
     quiz_max_questions: int = Field(default=30, alias="QUIZ_MAX_QUESTIONS")

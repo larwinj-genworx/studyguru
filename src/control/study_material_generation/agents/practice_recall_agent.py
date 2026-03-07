@@ -22,15 +22,24 @@ class PracticeRecallAgent(BaseStructuredAgent):
         definition: str,
         examples: list[str],
         revision_feedback: str | None,
+        evidence_pack: dict[str, Any] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        evidence_text = self.format_evidence_pack(
+            evidence_pack,
+            max_sources=4,
+            max_snippets=5,
+            max_chars_per_snippet=220,
+        )
         prompt = (
             f"Concept: {concept_name}\n"
             f"Definition: {definition}\n"
             f"Examples: {examples}\n\n"
-            f"Revision Feedback: {revision_feedback or 'None'}\n\n"
+            f"Revision Feedback: {revision_feedback or 'None'}\n"
+            f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with keys: mcqs (6-10 items), flashcards (8-15 items). "
             "Each MCQ should have question, options (exactly 4), answer (one of the options), explanation. "
             "Each flashcard should have question and answer. "
+            "Keep the practice items grounded in the evidence pack and aligned with the worked examples. "
             "If Revision Feedback is provided, fix those issues first. "
             "Strict rule: all questions must test only this concept. "
             "Output JSON only without markdown fences."

@@ -129,6 +129,39 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_quiz_responses_concept ON quiz_responses (concept_id)",
         ],
     ),
+    (
+        "20260307_relax_quiz_fks",
+        [
+            "ALTER TABLE quiz_questions DROP CONSTRAINT IF EXISTS quiz_questions_subject_id_fkey",
+            "ALTER TABLE quiz_questions DROP CONSTRAINT IF EXISTS quiz_questions_concept_id_fkey",
+            "ALTER TABLE quiz_sessions DROP CONSTRAINT IF EXISTS quiz_sessions_subject_id_fkey",
+            "ALTER TABLE quiz_responses DROP CONSTRAINT IF EXISTS quiz_responses_concept_id_fkey",
+            "ALTER TABLE quiz_questions ALTER COLUMN subject_id DROP NOT NULL",
+            "ALTER TABLE quiz_questions ALTER COLUMN concept_id DROP NOT NULL",
+            "ALTER TABLE quiz_sessions ALTER COLUMN subject_id DROP NOT NULL",
+            "ALTER TABLE quiz_responses ALTER COLUMN concept_id DROP NOT NULL",
+            """
+            ALTER TABLE quiz_questions
+            ADD CONSTRAINT quiz_questions_subject_id_fkey
+            FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL
+            """,
+            """
+            ALTER TABLE quiz_questions
+            ADD CONSTRAINT quiz_questions_concept_id_fkey
+            FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+            """,
+            """
+            ALTER TABLE quiz_sessions
+            ADD CONSTRAINT quiz_sessions_subject_id_fkey
+            FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL
+            """,
+            """
+            ALTER TABLE quiz_responses
+            ADD CONSTRAINT quiz_responses_concept_id_fkey
+            FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+            """,
+        ],
+    ),
 ]
 
 

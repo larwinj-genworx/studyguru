@@ -14,7 +14,7 @@ from src.schemas.study_material import (
 )
 
 
-CONTENT_SCHEMA_VERSION = "v1"
+CONTENT_SCHEMA_VERSION = "v2"
 
 
 def build_learning_content(
@@ -38,11 +38,13 @@ def build_learning_content(
     recap = list(core.recap) if core else []
     examples = list(core.examples) if core else []
     formulas = list(core.formulas) if core else []
+    references = list(core.references) if core else []
 
     engine_content = (engine_output or {}).get("content") or {}
     full_text = str(engine_content.get("full_study_material", "")).strip()
     quick_revision_text = str(engine_content.get("quick_revision", "")).strip()
     concept_analysis = (engine_output or {}).get("concept_analysis") or {}
+    grounding = (engine_output or {}).get("grounding") or {}
 
     highlights = _compact_list(recap[:5]) or _compact_list(key_steps[:5])
 
@@ -57,6 +59,19 @@ def build_learning_content(
         "concept_level": concept_analysis.get("concept_level"),
         "complexity_score": concept_analysis.get("complexity_score"),
         "required_depth": concept_analysis.get("required_depth"),
+        "retrieval_status": grounding.get("retrieval_status"),
+        "source_count": grounding.get("source_count", len(references)),
+        "retrieved_at": grounding.get("retrieved_at"),
+        "queries": grounding.get("queries", []),
+        "sources": grounding.get("sources") or [
+            {
+                "title": str(item.get("title", "Resource")).strip(),
+                "url": str(item.get("url", "")).strip(),
+                "domain": str(item.get("note", "")).strip(),
+            }
+            for item in references
+            if isinstance(item, dict)
+        ],
     }
 
     sections: list[LearningSection] = []
@@ -237,6 +252,40 @@ def build_learning_content(
                 children=[],
             )
         )
+
+    if references:
+        source_items: list[str] = []
+        for item in references:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "Resource")).strip() or "Resource"
+            url = str(item.get("url", "")).strip()
+            note = str(item.get("note", "")).strip()
+            text = f"{title} - {url}" if url else title
+            if note:
+                text = f"{text} ({note})"
+            source_items.append(text)
+        if source_items:
+            sections.append(
+                LearningSection(
+                    id=_slugify("Sources and Further Reading"),
+                    title="Sources & Further Reading",
+                    level=2,
+                    blocks=[
+                        {
+                            "type": "callout",
+                            "variant": "note",
+                            "title": "How This Material Was Grounded",
+                            "content": [
+                                f"Retrieval status: {metadata.get('retrieval_status') or 'unknown'}",
+                                f"Source count: {metadata.get('source_count') or len(source_items)}",
+                            ],
+                        },
+                        {"type": "list", "style": "bullet", "items": source_items[:8]},
+                    ],
+                    children=[],
+                )
+            )
 
     return LearningContent(
         metadata=metadata,
