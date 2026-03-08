@@ -4,8 +4,13 @@ from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import material_job_app_service, study_material_app_service
+from src.core.services import learning_bot_app_service, material_job_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
+from src.schemas.learning_bot import (
+    LearningBotMessageCreate,
+    LearningBotSessionDetailResponse,
+    LearningBotTurnResponse,
+)
 from src.schemas.study_material import (
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
@@ -464,6 +469,59 @@ async def get_student_learning_content(
     return await study_material_app_service.get_student_concept_learning_content(
         subject_id=subject_id,
         concept_id=concept_id,
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/session",
+    response_model=LearningBotSessionDetailResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_learning_bot_session(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotSessionDetailResponse:
+    return await learning_bot_app_service.get_student_learning_bot_session(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/messages",
+    response_model=LearningBotTurnResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def send_student_learning_bot_message(
+    subject_id: str,
+    concept_id: str,
+    payload: LearningBotMessageCreate,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotTurnResponse:
+    return await learning_bot_app_service.send_student_learning_bot_message(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+        payload=payload,
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/session/reset",
+    response_model=LearningBotSessionDetailResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def reset_student_learning_bot_session(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotSessionDetailResponse:
+    return await learning_bot_app_service.reset_student_learning_bot_session(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
     )
 
 

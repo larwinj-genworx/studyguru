@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.data.models.postgres.base import Base, utc_now
+from src.schemas.learning_bot import LearningBotMessageRole, LearningBotSessionStatus
 from src.schemas.study_material import JobStatus, MaterialLifecycleStatus, ReviewStatus
 from src.schemas.quiz import QuizSessionStatus
 
@@ -132,6 +133,67 @@ class ConceptMaterial(Base):
             text("to_tsvector('english', content_text)"),
             postgresql_using="gin",
         ),
+    )
+
+
+class LearningBotSession(Base):
+    __tablename__ = "learning_bot_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    concept_id: Mapped[str] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    status: Mapped[LearningBotSessionStatus] = mapped_column(
+        SAEnum(LearningBotSessionStatus, name="learning_bot_session_status", native_enum=False),
+        default=LearningBotSessionStatus.active,
+    )
+    title: Mapped[str | None] = mapped_column(String(200), default=None)
+    session_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        Index(
+            "uq_learning_bot_sessions_active_user_concept",
+            "user_id",
+            "concept_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+
+class LearningBotMessage(Base):
+    __tablename__ = "learning_bot_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("learning_bot_sessions.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    role: Mapped[LearningBotMessageRole] = mapped_column(
+        SAEnum(LearningBotMessageRole, name="learning_bot_message_role", native_enum=False),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    citations: Mapped[list] = mapped_column(JSONB, default=list)
+    follow_up_suggestions: Mapped[list] = mapped_column(JSONB, default=list)
+    message_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        Index("ix_learning_bot_messages_session_created", "session_id", "created_at"),
     )
 
 

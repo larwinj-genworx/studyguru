@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     evidence_search_results_per_query: int = Field(default=3, alias="EVIDENCE_SEARCH_RESULTS_PER_QUERY")
     evidence_max_sources: int = Field(default=6, alias="EVIDENCE_MAX_SOURCES")
     evidence_max_snippets: int = Field(default=10, alias="EVIDENCE_MAX_SNIPPETS")
+    learning_bot_history_limit: int = Field(default=8, alias="LEARNING_BOT_HISTORY_LIMIT")
+    learning_bot_max_internal_chunks: int = Field(default=6, alias="LEARNING_BOT_MAX_INTERNAL_CHUNKS")
+    learning_bot_max_external_chunks: int = Field(default=4, alias="LEARNING_BOT_MAX_EXTERNAL_CHUNKS")
+    learning_bot_external_trigger_score: float = Field(
+        default=0.17,
+        alias="LEARNING_BOT_EXTERNAL_TRIGGER_SCORE",
+    )
 
     quiz_min_questions: int = Field(default=10, alias="QUIZ_MIN_QUESTIONS")
     quiz_max_questions: int = Field(default=30, alias="QUIZ_MAX_QUESTIONS")
