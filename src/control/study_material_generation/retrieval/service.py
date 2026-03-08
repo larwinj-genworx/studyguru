@@ -192,6 +192,7 @@ class EvidenceRetrievalService:
         grade_level: str,
         concept_name: str,
         concept_description: str | None = None,
+        query_focus: str | None = None,
     ) -> dict[str, Any]:
         logger.info(
             "[EvidenceRetrievalService] Started evidence retrieval for subject='%s' concept='%s'.",
@@ -203,6 +204,7 @@ class EvidenceRetrievalService:
             grade_level=grade_level,
             concept_name=concept_name,
             concept_description=concept_description,
+            query_focus=query_focus,
         )
         search_results = await self._search_queries(
             queries,
@@ -288,8 +290,10 @@ class EvidenceRetrievalService:
         grade_level: str,
         concept_name: str,
         concept_description: str | None,
+        query_focus: str | None,
     ) -> list[str]:
         description = (concept_description or "").strip()
+        focus = " ".join((query_focus or "").split()).strip()
         normalized_grade = grade_level.strip()
         normalized_subject = subject_name.strip()
         normalized_concept = concept_name.strip()
@@ -298,6 +302,8 @@ class EvidenceRetrievalService:
             f"{normalized_grade} {normalized_subject} {normalized_concept} formulas examples",
             f"{normalized_subject} {normalized_concept} lesson for {normalized_grade}",
         ]
+        if focus:
+            queries.insert(1, f"{normalized_subject} {normalized_concept} {focus[:100]}")
         if description:
             queries.append(f"{normalized_subject} {normalized_concept} {description[:80]}")
         deduped: list[str] = []
