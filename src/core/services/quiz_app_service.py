@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 from src.config.settings import get_settings
 from src.control.student_quiz_generation.agents import build_agent_registry
 from src.control.student_quiz_generation.services.quiz_engine import QuizEngine
-from src.core.services import quiz_service
+from src.core.services import enrollment_app_service, quiz_service
 from src.data.models.postgres.models import QuizQuestion, QuizResponse, QuizSession
 from src.data.repositories import quiz_repository, study_material_repository
 from src.schemas.quiz import (
@@ -53,9 +53,10 @@ async def start_student_quiz(
     payload: QuizSessionStartRequest,
     user_id: str,
 ) -> QuizSessionStartResponse:
-    subject = await study_material_repository.get_subject(payload.subject_id)
-    if not subject or not subject.published:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject is not published.")
+    subject, _ = await enrollment_app_service.ensure_student_enrollment(
+        payload.subject_id,
+        user_id,
+    )
 
     concepts = await study_material_repository.list_concepts(subject.id)
     concept_map = {concept.id: concept for concept in concepts}
@@ -393,7 +394,10 @@ async def submit_student_answer(
     if completed:
         session.status = QuizSessionStatus.completed
         session.completed_at = now
-        session.score_percent = round((session.correct_count / session.total_questions) * 100, 2)
+        session.score_percent = round(
+            (_first_attempt_count(session.session_meta) / session.total_questions) * 100,
+            2,
+        )
         report = await _build_and_store_report(session, question_ids)
     await quiz_repository.update_session(session)
 
@@ -455,7 +459,7 @@ async def get_student_quiz_report(session_id: str, user_id: str) -> QuizReportRe
             status_code=status.HTTP_409_CONFLICT,
             detail="Quiz report is available only after completion.",
         )
-    if session.report:
+    if session.report and _report_uses_first_attempt_scoring(session):
         report = QuizReportResponse(**session.report)
         return report
     question_ids = list(session.question_ids or [])
@@ -606,13 +610,20 @@ async def _build_and_store_report(session: QuizSession, question_ids: list[str])
     for response in responses:
         response_map.setdefault(response.concept_id, []).append(response)
 
+    first_attempt_correct_count = sum(
+        1 for response in responses if _was_first_attempt_correct(response)
+    )
+    total_attempts = sum(int(response.attempts or 0) for response in responses)
+
     topic_performance: list = []
     for concept_id in session.concept_ids or []:
         concept = concept_map.get(concept_id)
         if not concept:
             continue
         responses_for_topic = response_map.get(concept_id, [])
-        correct_count = sum(1 for item in responses_for_topic if item.is_correct)
+        first_attempt_correct = sum(
+            1 for item in responses_for_topic if _was_first_attempt_correct(item)
+        )
         total_questions = len(responses_for_topic)
         highlights: list[str] = []
         material = await study_material_repository.get_latest_material(concept_id, published_only=True)
@@ -623,7 +634,7 @@ async def _build_and_store_report(session: QuizSession, question_ids: list[str])
             quiz_service.build_topic_performance(
                 concept_id=concept_id,
                 concept_name=concept.name,
-                correct_count=correct_count,
+                first_attempt_correct_count=first_attempt_correct,
                 total_questions=total_questions,
                 highlights=highlights,
             )
@@ -634,11 +645,35 @@ async def _build_and_store_report(session: QuizSession, question_ids: list[str])
         subject_id=session.subject_id,
         subject_name=subject_name,
         total_questions=session.total_questions,
-        correct_count=session.correct_count,
+        first_attempt_correct_count=first_attempt_correct_count,
         completed_at=session.completed_at or datetime.now(timezone.utc),
         topic_performance=topic_performance,
-        metadata={"attempts": len(responses)},
+        metadata={
+            "attempted_questions": len(responses),
+            "total_attempts": total_attempts,
+            "resolved_questions": session.correct_count,
+            "first_attempt_correct_count": first_attempt_correct_count,
+            "scoring_model": "first_attempt_accuracy",
+        },
     )
     session.report = report.model_dump(mode="json")
     await quiz_repository.update_session(session)
     return report
+
+
+def _was_first_attempt_correct(response: QuizResponse) -> bool:
+    attempt_log = list(response.attempt_log or [])
+    if attempt_log:
+        first_attempt = attempt_log[0]
+        if isinstance(first_attempt, dict):
+            return bool(first_attempt.get("correct"))
+    return bool(response.is_correct and int(response.attempts or 0) <= 1)
+
+
+def _report_uses_first_attempt_scoring(session: QuizSession) -> bool:
+    if not isinstance(session.report, dict):
+        return False
+    meta = session.report.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return meta.get("scoring_model") == "first_attempt_accuracy"

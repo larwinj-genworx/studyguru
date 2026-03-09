@@ -46,6 +46,20 @@ class Subject(Base):
     concepts: Mapped[list["Concept"]] = relationship(back_populates="subject", cascade="all, delete-orphan")
 
 
+class SubjectEnrollment(Base):
+    __tablename__ = "subject_enrollments"
+
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Concept(Base):
     __tablename__ = "concepts"
 

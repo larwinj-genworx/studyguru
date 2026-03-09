@@ -456,6 +456,12 @@ async def add_student_bookmark(user_id: str, subject_id: str, concept_id: str) -
     subject = await study_material_repository.get_subject(subject_id)
     if not subject or not subject.published:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject is not published.")
+    enrollment = await study_material_repository.get_subject_enrollment(user_id, subject_id)
+    if not enrollment:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Enroll in this syllabus before bookmarking topics.",
+        )
     concept = await study_material_repository.get_concept(concept_id)
     if not concept or concept.subject_id != subject.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
