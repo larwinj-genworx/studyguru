@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from src.schemas.learning_bot import LearningBotSessionStatus
+from src.schemas.quiz import QuizSessionStatus, QuizTopicPerformance
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -141,9 +144,17 @@ class SubjectResponse(BaseModel):
     grade_level: str
     description: str | None = None
     published: bool
+    is_enrolled: bool = False
+    enrolled_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     concepts: list[ConceptResponse] = Field(default_factory=list)
+
+
+class SubjectEnrollmentResponse(BaseModel):
+    subject_id: str
+    student_id: str
+    enrolled_at: datetime
 
 
 class MaterialJobStatusResponse(BaseModel):
@@ -211,6 +222,87 @@ class ConceptResourcesResponse(BaseModel):
     subject_name: str
     resources: list[ResourceItem] = Field(default_factory=list)
     approved_video_id: str | None = None
+
+
+class StudentActivityOverviewResponse(BaseModel):
+    total_concepts: int = 0
+    engaged_concepts: int = 0
+    progress_percent: float = 0
+    bookmarks_count: int = 0
+    total_quiz_sessions: int = 0
+    completed_quizzes: int = 0
+    average_quiz_accuracy: float | None = None
+    best_quiz_accuracy: float | None = None
+    learning_sessions: int = 0
+    learning_messages: int = 0
+    last_activity_at: datetime | None = None
+
+
+class AdminEnrolledStudentResponse(BaseModel):
+    student_id: str
+    student_email: str
+    enrolled_at: datetime
+    overview: StudentActivityOverviewResponse
+
+
+class AdminStudentConceptActivityResponse(BaseModel):
+    concept_id: str
+    concept_name: str
+    status: str
+    has_bookmark: bool = False
+    quiz_sessions: int = 0
+    completed_quizzes: int = 0
+    best_quiz_accuracy: float | None = None
+    learning_sessions: int = 0
+    learning_messages: int = 0
+    last_activity_at: datetime | None = None
+
+
+class AdminStudentQuizReportResponse(BaseModel):
+    session_id: str
+    status: QuizSessionStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    accuracy: float | None = None
+    correct_count: int = 0
+    total_questions: int = 0
+    topics: list[QuizTopicPerformance] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class AdminStudentLearningSessionResponse(BaseModel):
+    session_id: str
+    concept_id: str
+    concept_name: str
+    status: LearningBotSessionStatus
+    title: str | None = None
+    prompt_count: int = 0
+    message_count: int = 0
+    last_message_at: datetime
+
+
+class StudentActivityEventResponse(BaseModel):
+    event_type: str
+    title: str
+    description: str | None = None
+    occurred_at: datetime
+    concept_id: str | None = None
+    concept_name: str | None = None
+
+
+class AdminStudentActivityResponse(BaseModel):
+    subject_id: str
+    subject_name: str
+    grade_level: str
+    student_id: str
+    student_email: str
+    enrolled_at: datetime
+    overview: StudentActivityOverviewResponse
+    concept_activity: list[AdminStudentConceptActivityResponse] = Field(default_factory=list)
+    bookmarks: list[ConceptBookmarkResponse] = Field(default_factory=list)
+    learning_sessions: list[AdminStudentLearningSessionResponse] = Field(default_factory=list)
+    quiz_reports: list[AdminStudentQuizReportResponse] = Field(default_factory=list)
+    recent_activity: list[StudentActivityEventResponse] = Field(default_factory=list)
 
 
 class VideoFeedbackRequest(BaseModel):

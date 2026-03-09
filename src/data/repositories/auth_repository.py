@@ -21,6 +21,14 @@ async def get_user_by_email(email: str) -> User | None:
         return result.scalar_one_or_none()
 
 
+async def list_users_by_ids(user_ids: list[str]) -> list[User]:
+    if not user_ids:
+        return []
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(User).where(User.id.in_(user_ids)))
+        return result.scalars().all()
+
+
 async def create_user(email: str, password: str, role: str) -> User:
     normalized = email.strip().lower()
     async with AsyncSessionFactory() as session:

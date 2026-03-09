@@ -12,6 +12,7 @@ from src.data.models.postgres.models import (
     MaterialJob,
     MaterialJobConcept,
     Subject,
+    SubjectEnrollment,
 )
 from src.schemas.study_material import MaterialLifecycleStatus
 
@@ -54,6 +55,48 @@ async def list_subjects_for_owner(owner_id: str) -> list[Subject]:
             .order_by(desc(Subject.created_at))
         )
         return result.scalars().all()
+
+
+async def list_enrollments_for_student(student_id: str) -> list[SubjectEnrollment]:
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(SubjectEnrollment)
+            .where(SubjectEnrollment.student_id == student_id)
+            .order_by(desc(SubjectEnrollment.enrolled_at))
+        )
+        return result.scalars().all()
+
+
+async def list_subject_enrollments(subject_id: str) -> list[SubjectEnrollment]:
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(SubjectEnrollment)
+            .where(SubjectEnrollment.subject_id == subject_id)
+            .order_by(desc(SubjectEnrollment.enrolled_at))
+        )
+        return result.scalars().all()
+
+
+async def get_subject_enrollment(student_id: str, subject_id: str) -> SubjectEnrollment | None:
+    async with AsyncSessionFactory() as session:
+        return await session.get(
+            SubjectEnrollment,
+            {"student_id": student_id, "subject_id": subject_id},
+        )
+
+
+async def create_subject_enrollment(student_id: str, subject_id: str) -> SubjectEnrollment:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            existing = await session.get(
+                SubjectEnrollment,
+                {"student_id": student_id, "subject_id": subject_id},
+            )
+            if existing:
+                return existing
+            enrollment = SubjectEnrollment(student_id=student_id, subject_id=subject_id)
+            session.add(enrollment)
+        return enrollment
 
 
 async def list_concepts(subject_id: str) -> list[Concept]:
@@ -193,6 +236,22 @@ async def list_bookmarks(user_id: str, subject_id: str | None = None) -> list[Co
         return result.scalars().all()
 
 
+async def list_bookmarks_for_users(
+    user_ids: list[str],
+    subject_id: str | None = None,
+) -> list[ConceptBookmark]:
+    if not user_ids:
+        return []
+    async with AsyncSessionFactory() as session:
+        stmt = select(ConceptBookmark).where(ConceptBookmark.user_id.in_(user_ids))
+        if subject_id:
+            stmt = stmt.join(Concept, Concept.id == ConceptBookmark.concept_id).where(
+                Concept.subject_id == subject_id
+            )
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+
 async def create_bookmark(user_id: str, concept_id: str) -> ConceptBookmark:
     async with AsyncSessionFactory() as session:
         async with session.begin():
@@ -269,6 +328,9 @@ async def delete_subject_data(subject_id: str) -> None:
                     delete(ConceptBookmark).where(ConceptBookmark.concept_id.in_(concept_ids))
                 )
                 await session.execute(
+                    delete(SubjectEnrollment).where(SubjectEnrollment.subject_id == subject_id)
+                )
+                await session.execute(
                     delete(ConceptVideoFeedback).where(ConceptVideoFeedback.concept_id.in_(concept_ids))
                 )
                 await session.execute(
@@ -278,6 +340,10 @@ async def delete_subject_data(subject_id: str) -> None:
                     delete(ConceptMaterial).where(ConceptMaterial.concept_id.in_(concept_ids))
                 )
                 await session.execute(delete(Concept).where(Concept.id.in_(concept_ids)))
+            else:
+                await session.execute(
+                    delete(SubjectEnrollment).where(SubjectEnrollment.subject_id == subject_id)
+                )
 
             await session.execute(delete(ConceptMaterial).where(ConceptMaterial.subject_id == subject_id))
 

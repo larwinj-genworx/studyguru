@@ -230,12 +230,12 @@ def build_report(
     subject_id: str,
     subject_name: str,
     total_questions: int,
-    correct_count: int,
+    first_attempt_correct_count: int,
     completed_at: Any,
     topic_performance: list[QuizTopicPerformance],
     metadata: dict[str, Any] | None = None,
 ) -> QuizReportResponse:
-    accuracy = (correct_count / total_questions) if total_questions else 0.0
+    accuracy = (first_attempt_correct_count / total_questions) if total_questions else 0.0
     recommendations: list[str] = []
     if accuracy < 0.6:
         recommendations.append("Focus on the weakest topics and review their core steps again.")
@@ -249,7 +249,7 @@ def build_report(
         subject_id=subject_id,
         subject_name=subject_name,
         total_questions=total_questions,
-        correct_count=correct_count,
+        correct_count=first_attempt_correct_count,
         accuracy=round(accuracy, 3),
         completed_at=completed_at,
         topic_breakdown=topic_performance,
@@ -262,11 +262,11 @@ def build_topic_performance(
     *,
     concept_id: str,
     concept_name: str,
-    correct_count: int,
+    first_attempt_correct_count: int,
     total_questions: int,
     highlights: list[str] | None = None,
 ) -> QuizTopicPerformance:
-    accuracy = (correct_count / total_questions) if total_questions else 0.0
+    accuracy = (first_attempt_correct_count / total_questions) if total_questions else 0.0
     status = "strong"
     if accuracy < 0.6:
         status = "focus"
@@ -277,7 +277,7 @@ def build_topic_performance(
         concept_id=concept_id,
         concept_name=concept_name,
         accuracy=round(accuracy, 3),
-        correct_count=correct_count,
+        correct_count=first_attempt_correct_count,
         total_questions=total_questions,
         status=status,
         recommendations=recommendations,

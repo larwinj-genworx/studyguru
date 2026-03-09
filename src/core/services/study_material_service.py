@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.data.models.postgres.models import Concept, ConceptMaterial, Subject
+from src.data.models.postgres.models import Concept, ConceptMaterial, Subject, SubjectEnrollment
 from src.core.services import learning_content_service
 from src.schemas.study_material import (
     ArtifactIndex,
+    SubjectEnrollmentResponse,
     ConceptBulkCreate,
     ConceptCreate,
     ConceptMaterialRecord,
@@ -115,16 +116,30 @@ def to_concept_response(concept: Concept) -> ConceptResponse:
     )
 
 
-def to_subject_response(subject: Subject, concepts: list[Concept]) -> SubjectResponse:
+def to_subject_response(
+    subject: Subject,
+    concepts: list[Concept],
+    enrollment: SubjectEnrollment | None = None,
+) -> SubjectResponse:
     return SubjectResponse(
         subject_id=subject.id,
         name=subject.name,
         grade_level=subject.grade_level,
         description=subject.description,
         published=subject.published,
+        is_enrolled=enrollment is not None,
+        enrolled_at=enrollment.enrolled_at if enrollment else None,
         created_at=subject.created_at,
         updated_at=subject.updated_at,
         concepts=[to_concept_response(concept) for concept in concepts],
+    )
+
+
+def to_subject_enrollment_response(enrollment: SubjectEnrollment) -> SubjectEnrollmentResponse:
+    return SubjectEnrollmentResponse(
+        subject_id=enrollment.subject_id,
+        student_id=enrollment.student_id,
+        enrolled_at=enrollment.enrolled_at,
     )
 
 

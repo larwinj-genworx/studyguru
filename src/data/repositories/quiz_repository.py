@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from src.data.clients.postgres import AsyncSessionFactory
 from src.data.models.postgres.models import QuizQuestion, QuizResponse, QuizSession
@@ -50,6 +50,21 @@ async def create_session(session_model: QuizSession) -> QuizSession:
         async with session.begin():
             session.add(session_model)
         return session_model
+
+
+async def list_sessions_for_subject(
+    subject_id: str,
+    user_ids: list[str] | None = None,
+) -> list[QuizSession]:
+    async with AsyncSessionFactory() as session:
+        stmt = select(QuizSession).where(QuizSession.subject_id == subject_id)
+        if user_ids is not None:
+            if not user_ids:
+                return []
+            stmt = stmt.where(QuizSession.user_id.in_(user_ids))
+        stmt = stmt.order_by(desc(QuizSession.updated_at), desc(QuizSession.started_at))
+        result = await session.execute(stmt)
+        return result.scalars().all()
 
 
 async def get_session(session_id: str) -> QuizSession | None:
