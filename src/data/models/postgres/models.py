@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.data.models.postgres.base import Base, utc_now
+from src.schemas.concept_images import ConceptImageStatus
 from src.schemas.learning_bot import LearningBotMessageRole, LearningBotSessionStatus
 from src.schemas.study_material import JobStatus, MaterialLifecycleStatus, ReviewStatus
 from src.schemas.quiz import QuizSessionStatus
@@ -197,18 +198,66 @@ class LearningBotMessage(Base):
     )
 
 
+class ConceptImageAsset(Base):
+    __tablename__ = "concept_image_assets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    concept_id: Mapped[str] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    concept_material_id: Mapped[str] = mapped_column(
+        ForeignKey("concept_materials.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    status: Mapped[ConceptImageStatus] = mapped_column(
+        SAEnum(ConceptImageStatus, name="concept_image_status", native_enum=False),
+        default=ConceptImageStatus.pending,
+    )
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    caption: Mapped[str | None] = mapped_column(Text, default=None)
+    alt_text: Mapped[str | None] = mapped_column(Text, default=None)
+    intent_label: Mapped[str | None] = mapped_column(String(160), default=None)
+    source_page_url: Mapped[str | None] = mapped_column(Text, default=None)
+    source_image_url: Mapped[str | None] = mapped_column(Text, default=None)
+    source_domain: Mapped[str | None] = mapped_column(String(120), default=None)
+    local_image_path: Mapped[str] = mapped_column(String(320), nullable=False)
+    thumbnail_path: Mapped[str] = mapped_column(String(320), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(80), default=None)
+    width: Mapped[int | None] = mapped_column(Integer, default=None)
+    height: Mapped[int | None] = mapped_column(Integer, default=None)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, default=None)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), default=None)
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    __table_args__ = (
+        Index("ix_concept_image_assets_material_status", "concept_material_id", "status"),
+        Index("ix_concept_image_assets_concept_created", "concept_id", "created_at"),
+    )
+
+
 class ConceptBookmark(Base):
     __tablename__ = "concept_bookmarks"
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id", ondelete="CASCADE"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class ConceptVideoFeedback(Base):
     __tablename__ = "concept_video_feedback"
 
-    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id"), primary_key=True)
+    concept_id: Mapped[str] = mapped_column(ForeignKey("concepts.id", ondelete="CASCADE"), primary_key=True)
     video_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     status: Mapped[str] = mapped_column(String(20), default="rejected")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -238,12 +287,16 @@ class QuizQuestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+    __table_args__ = (
+        Index("ix_quiz_questions_concept_version", "concept_id", "material_version"),
+    )
+
 
 class QuizSession(Base):
     __tablename__ = "quiz_sessions"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     subject_id: Mapped[str | None] = mapped_column(
         ForeignKey("subjects.id", ondelete="SET NULL"),
         index=True,
@@ -271,10 +324,15 @@ class QuizResponse(Base):
     __tablename__ = "quiz_responses"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
-    session_id: Mapped[str] = mapped_column(ForeignKey("quiz_sessions.id"), nullable=False)
-    question_id: Mapped[str] = mapped_column(ForeignKey("quiz_questions.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("quiz_sessions.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    question_id: Mapped[str] = mapped_column(ForeignKey("quiz_questions.id", ondelete="CASCADE"), nullable=False)
     concept_id: Mapped[str | None] = mapped_column(
         ForeignKey("concepts.id", ondelete="SET NULL"),
+        index=True,
         nullable=True,
     )
     selected_option: Mapped[str | None] = mapped_column(Text, default=None)

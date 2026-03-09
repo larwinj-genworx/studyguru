@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import FileResponse
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import learning_bot_app_service, material_job_app_service, study_material_app_service
+from src.core.services import concept_image_app_service, learning_bot_app_service, material_job_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
+from src.schemas.concept_images import ConceptImageCollectionResponse
 from src.schemas.learning_bot import (
     LearningBotMessageCreate,
     LearningBotSessionDetailResponse,
@@ -402,6 +403,101 @@ async def approve_admin_concept_video(
     )
 
 
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def get_admin_concept_images(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.get_admin_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/generate",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def generate_admin_concept_images(
+    subject_id: str,
+    concept_id: str,
+    refresh: bool = Query(default=False),
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.generate_admin_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+        refresh=refresh,
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/approve",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def approve_admin_concept_image(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.approve_admin_concept_image(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/reject",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def reject_admin_concept_image(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.reject_admin_concept_image(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/file",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def download_admin_concept_image_file(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    variant: str = Query(default="full"),
+    current_user: dict = Depends(get_current_user),
+) -> FileResponse:
+    path = await concept_image_app_service.get_admin_concept_image_file_path(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+        variant=variant,
+    )
+    return FileResponse(path=str(path), filename=path.name)
+
+
 # ----- Student APIs -----
 @router.get(
     "/student/subjects",
@@ -523,6 +619,40 @@ async def reset_student_learning_bot_session(
         concept_id=concept_id,
         user_id=current_user["id"],
     )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/images",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def list_student_concept_images(
+    subject_id: str,
+    concept_id: str,
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.list_student_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/file",
+    dependencies=[Depends(require_role("student"))],
+)
+async def download_student_concept_image_file(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    variant: str = Query(default="full"),
+) -> FileResponse:
+    path = await concept_image_app_service.get_student_concept_image_file_path(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        variant=variant,
+    )
+    return FileResponse(path=str(path), filename=path.name)
 
 
 @router.get(
