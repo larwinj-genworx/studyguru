@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import FileResponse
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import concept_image_app_service, enrollment_app_service, learning_bot_app_service, material_job_app_service, study_material_app_service
+from src.core.services import concept_image_app_service, enrollment_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
 from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
 from src.schemas.learning_bot import (
@@ -13,6 +13,7 @@ from src.schemas.learning_bot import (
     LearningBotTurnResponse,
 )
 from src.schemas.study_material import (
+    AdminConceptPlanUpdateRequest,
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
     AdminEnrolledStudentResponse,
@@ -27,6 +28,8 @@ from src.schemas.study_material import (
     LearningContentResponse,
     LearningContentUpdate,
     MaterialJobStatusResponse,
+    StudentSubjectProgressResponse,
+    StudentTopicProgressResponse,
     StudentConceptSelection,
     SubjectCreate,
     SubjectEnrollmentResponse,
@@ -62,6 +65,23 @@ async def add_concepts(
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
     return await study_material_app_service.add_concepts_bulk(
+        subject_id,
+        payload,
+        owner_id=current_user["id"],
+    )
+
+
+@router.put(
+    "/admin/subjects/{subject_id}/concept-plan",
+    response_model=SubjectResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def save_admin_concept_plan(
+    subject_id: str,
+    payload: AdminConceptPlanUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> SubjectResponse:
+    return await study_material_app_service.save_concept_plan(
         subject_id,
         payload,
         owner_id=current_user["id"],
@@ -573,6 +593,40 @@ async def list_published_subject_concepts(
 
 
 @router.get(
+    "/student/subjects/{subject_id}/progression",
+    response_model=StudentSubjectProgressResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_subject_progression(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StudentSubjectProgressResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    return await progression_app_service.get_student_subject_progress(
+        subject_id=subject_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/complete",
+    response_model=StudentTopicProgressResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def mark_student_topic_complete(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StudentTopicProgressResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    return await progression_app_service.mark_topic_learning_complete(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.get(
     "/student/subjects/{subject_id}/materials",
     response_model=list[ConceptMaterialResponse],
     dependencies=[Depends(require_role("student"))],
@@ -612,6 +666,11 @@ async def download_student_concept_artifact(
     current_user: dict = Depends(get_current_user),
 ) -> FileResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     artifact_path = await material_job_app_service.get_published_concept_artifact_path(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -631,6 +690,11 @@ async def get_student_learning_content(
     current_user: dict = Depends(get_current_user),
 ) -> LearningContentResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await study_material_app_service.get_student_concept_learning_content(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -648,6 +712,11 @@ async def get_student_learning_bot_session(
     current_user: dict = Depends(get_current_user),
 ) -> LearningBotSessionDetailResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await learning_bot_app_service.get_student_learning_bot_session(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -667,6 +736,11 @@ async def send_student_learning_bot_message(
     current_user: dict = Depends(get_current_user),
 ) -> LearningBotTurnResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await learning_bot_app_service.send_student_learning_bot_message(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -686,6 +760,11 @@ async def reset_student_learning_bot_session(
     current_user: dict = Depends(get_current_user),
 ) -> LearningBotSessionDetailResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await learning_bot_app_service.reset_student_learning_bot_session(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -704,6 +783,11 @@ async def list_student_concept_images(
     current_user: dict = Depends(get_current_user),
 ) -> ConceptImageCollectionResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await concept_image_app_service.list_student_concept_images(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -722,6 +806,11 @@ async def download_student_concept_image_file(
     current_user: dict = Depends(get_current_user),
 ) -> FileResponse:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     path = await concept_image_app_service.get_student_concept_image_file_path(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -756,6 +845,12 @@ async def add_student_bookmark(
     concept_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> None:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     await study_material_app_service.add_student_bookmark(
         user_id=current_user["id"],
         subject_id=subject_id,
@@ -773,6 +868,12 @@ async def remove_student_bookmark(
     concept_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> None:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     await study_material_app_service.remove_student_bookmark(
         user_id=current_user["id"],
         concept_id=concept_id,

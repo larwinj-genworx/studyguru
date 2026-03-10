@@ -13,6 +13,7 @@ from src.config.settings import get_settings
 from src.core.services import study_material_service, learning_content_service
 from src.data.repositories import study_material_repository, material_job_repository
 from src.schemas.study_material import (
+    AdminConceptPlanUpdateRequest,
     ConceptBulkCreate,
     ConceptMaterialResponse,
     ConceptResponse,
@@ -44,6 +45,70 @@ def _slugify(value: str) -> str:
     return cleaned or "concept"
 
 
+def _validate_topic_orders(
+    topic_orders: list[int],
+    *,
+    existing_orders: set[int] | None = None,
+) -> None:
+    seen: set[int] = set(existing_orders or set())
+    duplicates: list[int] = []
+    for item in topic_orders:
+        if item in seen:
+            duplicates.append(item)
+            continue
+        seen.add(item)
+    if duplicates:
+        duplicate_text = ", ".join(str(item) for item in sorted(set(duplicates)))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Topic order values must be unique within a syllabus. Duplicates: {duplicate_text}",
+        )
+
+
+def _normalize_description(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _validate_published_subject_topic_plan(
+    *,
+    existing_concepts: list,
+    submitted_items: list,
+) -> None:
+    existing_ids = [concept.id for concept in existing_concepts]
+    submitted_existing_ids = [item.concept_id for item in submitted_items if item.concept_id]
+
+    if submitted_existing_ids != existing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Published topics stay locked in their current order. "
+                "Add new topics after the existing syllabus sequence."
+            ),
+        )
+
+    if any(item.concept_id for item in submitted_items[len(existing_concepts):]):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Existing published topics cannot be moved after new draft topics.",
+        )
+
+    concept_map = {concept.id: concept for concept in existing_concepts}
+    for item in submitted_items[: len(existing_concepts)]:
+        concept = concept_map[item.concept_id]
+        if (
+            concept.name.strip() != item.name.strip()
+            or _normalize_description(concept.description) != _normalize_description(item.description)
+            or int(concept.pass_percentage) != int(item.pass_percentage)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Published topics cannot be edited here. "
+                    "You can append new topics without changing the live sequence."
+                ),
+            )
+
+
 async def create_subject(payload: SubjectCreate, owner_id: str) -> SubjectResponse:
     subject = study_material_service.build_subject(payload, owner_id)
     subject = await study_material_repository.create_subject(subject)
@@ -59,12 +124,102 @@ async def add_concepts_bulk(
     subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
     if not subject:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+    existing_concepts = await study_material_repository.list_concepts(subject_id)
+    _validate_topic_orders(
+        [concept.topic_order for concept in payload.concepts],
+        existing_orders={concept.topic_order for concept in existing_concepts},
+    )
     concepts = [
         study_material_service.build_concept(concept, subject_id)
         for concept in payload.concepts
     ]
     subject.updated_at = datetime.now(timezone.utc)
     await study_material_repository.add_concepts(concepts)
+    await study_material_repository.update_subject(subject)
+    concept_rows = await study_material_repository.list_concepts(subject_id)
+    return study_material_service.to_subject_response(subject, concept_rows)
+
+
+async def save_concept_plan(
+    subject_id: str,
+    payload: AdminConceptPlanUpdateRequest,
+    owner_id: str,
+) -> SubjectResponse:
+    subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
+
+    existing_concepts = await study_material_repository.list_concepts(subject_id)
+    if subject.published:
+        _validate_published_subject_topic_plan(
+            existing_concepts=existing_concepts,
+            submitted_items=payload.concepts,
+        )
+    existing_map = {concept.id: concept for concept in existing_concepts}
+    submitted_existing_ids = [
+        item.concept_id
+        for item in payload.concepts
+        if item.concept_id
+    ]
+    if len(submitted_existing_ids) != len(set(submitted_existing_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Each existing topic can only appear once in the topic plan.",
+        )
+
+    invalid_ids = sorted({concept_id for concept_id in submitted_existing_ids if concept_id not in existing_map})
+    if invalid_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid concept IDs: {invalid_ids}",
+        )
+
+    submitted_existing_id_set = set(submitted_existing_ids)
+    missing_existing_ids = [
+        concept.id for concept in existing_concepts if concept.id not in submitted_existing_id_set
+    ]
+    if missing_existing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="All existing topics must remain in the topic planner when saving changes.",
+        )
+
+    updated_concepts: list = []
+    new_concepts: list = []
+    existing_count = len(existing_concepts)
+    for topic_order, item in enumerate(payload.concepts, start=1):
+        name = item.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Each topic needs a name before saving the topic plan.",
+            )
+        description = item.description.strip() if item.description else None
+        if item.concept_id:
+            concept = existing_map[item.concept_id]
+            concept.name = name
+            concept.description = description
+            concept.pass_percentage = item.pass_percentage
+            concept.topic_order = topic_order
+            updated_concepts.append(concept)
+            continue
+
+        if subject.published:
+            topic_order = existing_count + len(new_concepts) + 1
+        new_concepts.append(
+            study_material_service.build_concept_from_plan_item(
+                item,
+                subject_id=subject_id,
+                topic_order=topic_order,
+            )
+        )
+        new_concepts[-1].description = description
+
+    subject.updated_at = datetime.now(timezone.utc)
+    await study_material_repository.save_concept_plan(
+        updated_concepts=updated_concepts,
+        new_concepts=new_concepts,
+    )
     await study_material_repository.update_subject(subject)
     concept_rows = await study_material_repository.list_concepts(subject_id)
     return study_material_service.to_subject_response(subject, concept_rows)

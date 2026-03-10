@@ -74,6 +74,7 @@ class WorkedExampleAgent(BaseStructuredAgent):
             role="WorkedExampleAgent",
             goal="Generate practical worked examples with increasing difficulty.",
             backstory="Practice designer who converts concepts into solvable examples.",
+            enable_json_mode=False,
         )
 
     def execute(

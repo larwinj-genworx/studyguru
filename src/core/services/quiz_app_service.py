@@ -12,17 +12,20 @@ from fastapi import HTTPException, status
 from src.config.settings import get_settings
 from src.control.student_quiz_generation.agents import build_agent_registry
 from src.control.student_quiz_generation.services.quiz_engine import QuizEngine
-from src.core.services import enrollment_app_service, quiz_service
+from src.core.services import enrollment_app_service, progression_app_service, quiz_service
 from src.data.models.postgres.models import QuizQuestion, QuizResponse, QuizSession
 from src.data.repositories import quiz_repository, study_material_repository
 from src.schemas.quiz import (
     QuizAnswerRequest,
     QuizAnswerResponse,
+    QuizQuestionSourceType,
     QuizReportResponse,
     QuizSessionResponse,
     QuizSessionStartRequest,
     QuizSessionStartResponse,
     QuizSessionStatus,
+    QuizSessionType,
+    TopicAssessmentStartRequest,
 )
 from src.schemas.study_material import LearningContent, MaterialLifecycleStatus
 
@@ -57,6 +60,13 @@ async def start_student_quiz(
         payload.subject_id,
         user_id,
     )
+    subject_progress = await progression_app_service.get_student_subject_progress(
+        payload.subject_id,
+        user_id,
+    )
+    accessible_concept_ids = {
+        topic.concept_id for topic in subject_progress.topics if not topic.is_locked
+    }
 
     concepts = await study_material_repository.list_concepts(subject.id)
     concept_map = {concept.id: concept for concept in concepts}
@@ -66,6 +76,19 @@ async def start_student_quiz(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown concept IDs: {unknown}",
+        )
+    locked = [
+        concept_map[concept_id].name
+        for concept_id in unique_ids
+        if concept_id not in accessible_concept_ids
+    ]
+    if locked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Complete the current learning path before starting practice on locked topics. "
+                f"Blocked topics: {locked}"
+            ),
         )
 
     latest_materials = await study_material_repository.get_latest_materials(unique_ids)
@@ -122,6 +145,7 @@ async def start_student_quiz(
             bank = await quiz_repository.list_questions_for_concept(
                 profile.concept_id,
                 profile.material_version,
+                source_type=QuizQuestionSourceType.custom_practice,
             )
             missing = max(0, needed - len(bank))
             if missing > 0:
@@ -208,6 +232,7 @@ async def start_student_quiz(
     session_model = QuizSession(
         user_id=user_id,
         subject_id=subject.id,
+        session_type=QuizSessionType.custom_practice,
         status=QuizSessionStatus.in_progress,
         concept_ids=unique_ids,
         question_ids=question_ids,
@@ -242,17 +267,141 @@ async def start_student_quiz(
         session_id=session_model.id,
         subject_id=subject.id,
         subject_name=subject.name,
+        session_type=session_model.session_type,
         status=session_model.status,
         total_questions=session_model.total_questions,
         current_index=session_model.current_index,
         correct_count=session_model.correct_count,
         incorrect_count=session_model.incorrect_count,
         first_attempt_correct_count=_first_attempt_count(session_model.session_meta),
+        required_pass_percentage=session_model.required_pass_percentage,
+        passed=session_model.passed,
         started_at=session_model.started_at,
         completed_at=session_model.completed_at,
         topics=topic_summaries,
     )
 
+    return QuizSessionStartResponse(session=session_response, question=question_response)
+
+
+async def start_topic_assessment(
+    payload: TopicAssessmentStartRequest,
+    user_id: str,
+) -> QuizSessionStartResponse:
+    subject, _ = await enrollment_app_service.ensure_student_enrollment(
+        payload.subject_id,
+        user_id,
+    )
+    topic_progress = await progression_app_service.ensure_topic_assessment_ready(
+        subject_id=payload.subject_id,
+        concept_id=payload.concept_id,
+        user_id=user_id,
+    )
+
+    concept = await study_material_repository.get_concept(payload.concept_id)
+    if not concept or concept.subject_id != subject.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
+    material = await study_material_repository.get_latest_material(
+        payload.concept_id,
+        published_only=True,
+    )
+    if not material:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Assessment questions are not ready for this topic yet.",
+        )
+
+    bank = await quiz_repository.list_questions_for_concept(
+        payload.concept_id,
+        material.version,
+        source_type=QuizQuestionSourceType.topic_assessment,
+    )
+    if not bank:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Topic assessment is not available yet. Please regenerate the topic materials.",
+        )
+
+    selected_questions = list(bank)
+    random.shuffle(selected_questions)
+    question_ids = [question.id for question in selected_questions]
+    now = datetime.now(timezone.utc)
+    session_model = QuizSession(
+        user_id=user_id,
+        subject_id=subject.id,
+        session_type=QuizSessionType.topic_assessment,
+        status=QuizSessionStatus.in_progress,
+        gated_concept_id=concept.id,
+        concept_ids=[concept.id],
+        question_ids=question_ids,
+        current_index=0,
+        total_questions=len(question_ids),
+        correct_count=0,
+        incorrect_count=0,
+        score_percent=None,
+        required_pass_percentage=concept.pass_percentage,
+        passed=None,
+        session_meta={
+            "target_count": len(question_ids),
+            "weights": {concept.id: 1.0},
+            "topic_summaries": [
+                quiz_service.QuizTopicSummary(
+                    concept_id=concept.id,
+                    concept_name=concept.name,
+                    weight=1.0,
+                    question_count=len(question_ids),
+                    complexity_score=None,
+                ).model_dump()
+            ],
+            "first_attempt_correct": 0,
+            "scoring_model": "weighted_attempt_accuracy",
+            "attempt_credit_weights": {
+                "first_attempt": 1.0,
+                "second_attempt": 0.7,
+                "third_plus_attempt": 0.4,
+            },
+        },
+        started_at=now,
+        updated_at=now,
+    )
+    session_model = await quiz_repository.create_session(session_model)
+
+    first_question = selected_questions[0]
+    question_response = quiz_service.build_quiz_question_response(
+        question_id=first_question.id,
+        concept_id=first_question.concept_id,
+        concept_name=concept.name,
+        question=first_question.question,
+        options=list(first_question.options or [])[:4],
+        difficulty=first_question.difficulty or "medium",
+        position=1,
+        total=len(question_ids),
+    )
+    session_response = quiz_service.build_session_response(
+        session_id=session_model.id,
+        subject_id=subject.id,
+        subject_name=subject.name,
+        session_type=session_model.session_type,
+        status=session_model.status,
+        total_questions=session_model.total_questions,
+        current_index=session_model.current_index,
+        correct_count=session_model.correct_count,
+        incorrect_count=session_model.incorrect_count,
+        first_attempt_correct_count=_first_attempt_count(session_model.session_meta),
+        required_pass_percentage=topic_progress.pass_percentage,
+        passed=session_model.passed,
+        started_at=session_model.started_at,
+        completed_at=session_model.completed_at,
+        topics=[
+            quiz_service.QuizTopicSummary(
+                concept_id=concept.id,
+                concept_name=concept.name,
+                weight=1.0,
+                question_count=len(question_ids),
+                complexity_score=None,
+            )
+        ],
+    )
     return QuizSessionStartResponse(session=session_response, question=question_response)
 
 
@@ -286,12 +435,15 @@ async def get_student_quiz_session(session_id: str, user_id: str) -> QuizSession
         session_id=session.id,
         subject_id=subject.id,
         subject_name=subject.name,
+        session_type=session.session_type,
         status=session.status,
         total_questions=session.total_questions,
         current_index=session.current_index,
         correct_count=session.correct_count,
         incorrect_count=session.incorrect_count,
         first_attempt_correct_count=_first_attempt_count(session.session_meta),
+        required_pass_percentage=session.required_pass_percentage,
+        passed=session.passed,
         started_at=session.started_at,
         completed_at=session.completed_at,
         topics=_summaries_from_metadata(session.session_meta, concept_map),
@@ -394,11 +546,25 @@ async def submit_student_answer(
     if completed:
         session.status = QuizSessionStatus.completed
         session.completed_at = now
-        session.score_percent = round(
-            (_first_attempt_count(session.session_meta) / session.total_questions) * 100,
-            2,
-        )
-        report = await _build_and_store_report(session, question_ids)
+        if session.session_type == QuizSessionType.topic_assessment:
+            report = await _build_and_store_topic_assessment_report(session, question_ids)
+            session.score_percent = round(report.accuracy * 100, 2)
+            session.passed = report.passed
+            if session.gated_concept_id:
+                await progression_app_service.record_topic_assessment_outcome(
+                    subject_id=session.subject_id,
+                    concept_id=session.gated_concept_id,
+                    user_id=user_id,
+                    session_id=session.id,
+                    score_percent=session.score_percent,
+                    passed=bool(session.passed),
+                )
+        else:
+            session.score_percent = round(
+                (_first_attempt_count(session.session_meta) / session.total_questions) * 100,
+                2,
+            )
+            report = await _build_and_store_custom_report(session, question_ids)
     await quiz_repository.update_session(session)
 
     subject = await study_material_repository.get_subject(session.subject_id)
@@ -409,12 +575,15 @@ async def submit_student_answer(
         session_id=session.id,
         subject_id=session.subject_id,
         subject_name=subject_name,
+        session_type=session.session_type,
         status=session.status,
         total_questions=session.total_questions,
         current_index=session.current_index,
         correct_count=session.correct_count,
         incorrect_count=session.incorrect_count,
         first_attempt_correct_count=_first_attempt_count(session.session_meta),
+        required_pass_percentage=session.required_pass_percentage,
+        passed=session.passed,
         started_at=session.started_at,
         completed_at=session.completed_at,
         topics=_summaries_from_metadata(session.session_meta, concept_map),
@@ -459,11 +628,14 @@ async def get_student_quiz_report(session_id: str, user_id: str) -> QuizReportRe
             status_code=status.HTTP_409_CONFLICT,
             detail="Quiz report is available only after completion.",
         )
-    if session.report and _report_uses_first_attempt_scoring(session):
+    if session.report and _report_uses_known_scoring_model(session):
         report = QuizReportResponse(**session.report)
         return report
     question_ids = list(session.question_ids or [])
-    report = await _build_and_store_report(session, question_ids)
+    if session.session_type == QuizSessionType.topic_assessment:
+        report = await _build_and_store_topic_assessment_report(session, question_ids)
+    else:
+        report = await _build_and_store_custom_report(session, question_ids)
     return report
 
 
@@ -533,7 +705,12 @@ async def _generate_questions_for_concept(
             revision_feedback=revision_feedback,
         )
         for item in mcqs or []:
-            question = _normalize_mcq(item, profile=profile, subject_id=subject_id)
+            question = _normalize_mcq(
+                item,
+                profile=profile,
+                subject_id=subject_id,
+                source_type=QuizQuestionSourceType.custom_practice,
+            )
             if question:
                 questions.append(question)
         remaining = count - len(questions)
@@ -549,7 +726,13 @@ async def _generate_questions_for_concept(
     return questions
 
 
-def _normalize_mcq(item: Any, *, profile: quiz_service.ConceptProfile, subject_id: str) -> QuizQuestion | None:
+def _normalize_mcq(
+    item: Any,
+    *,
+    profile: quiz_service.ConceptProfile,
+    subject_id: str,
+    source_type: QuizQuestionSourceType,
+) -> QuizQuestion | None:
     if not isinstance(item, dict):
         return None
     question_text = str(item.get("question", "")).strip()
@@ -597,10 +780,11 @@ def _normalize_mcq(item: Any, *, profile: quiz_service.ConceptProfile, subject_i
         hints=sanitized_hints,
         explanation=explanation,
         difficulty=difficulty,
+        source_type=source_type,
     )
 
 
-async def _build_and_store_report(session: QuizSession, question_ids: list[str]) -> QuizReportResponse:
+async def _build_and_store_custom_report(session: QuizSession, question_ids: list[str]) -> QuizReportResponse:
     subject = await study_material_repository.get_subject(session.subject_id)
     subject_name = subject.name if subject else "Subject"
     concept_rows = await study_material_repository.list_concepts(session.subject_id)
@@ -634,18 +818,22 @@ async def _build_and_store_report(session: QuizSession, question_ids: list[str])
             quiz_service.build_topic_performance(
                 concept_id=concept_id,
                 concept_name=concept.name,
-                first_attempt_correct_count=first_attempt_correct,
+                scored_correct_count=first_attempt_correct,
                 total_questions=total_questions,
+                accuracy=(first_attempt_correct / total_questions) if total_questions else 0.0,
                 highlights=highlights,
             )
         )
 
+    accuracy = (first_attempt_correct_count / session.total_questions) if session.total_questions else 0.0
     report = quiz_service.build_report(
         session_id=session.id,
         subject_id=session.subject_id,
         subject_name=subject_name,
         total_questions=session.total_questions,
-        first_attempt_correct_count=first_attempt_correct_count,
+        scored_correct_count=first_attempt_correct_count,
+        accuracy=accuracy,
+        session_type=QuizSessionType.custom_practice,
         completed_at=session.completed_at or datetime.now(timezone.utc),
         topic_performance=topic_performance,
         metadata={
@@ -661,6 +849,91 @@ async def _build_and_store_report(session: QuizSession, question_ids: list[str])
     return report
 
 
+async def _build_and_store_topic_assessment_report(
+    session: QuizSession,
+    question_ids: list[str],
+) -> QuizReportResponse:
+    subject = await study_material_repository.get_subject(session.subject_id)
+    subject_name = subject.name if subject else "Subject"
+    concept_rows = await study_material_repository.list_concepts(session.subject_id)
+    concept_map = {row.id: row for row in concept_rows}
+    responses = await quiz_repository.list_responses_by_session(session.id)
+    response_map: dict[str, list[QuizResponse]] = {}
+    for response in responses:
+        response_map.setdefault(response.concept_id, []).append(response)
+
+    resolved_attempts = [
+        int(response.attempts or 0)
+        for response in responses
+        if bool(response.is_correct)
+    ]
+    earned_credit = sum(quiz_service.compute_attempt_credit(attempts) for attempts in resolved_attempts)
+    weighted_accuracy = (earned_credit / session.total_questions) if session.total_questions else 0.0
+    first_attempt_correct_count = sum(1 for attempts in resolved_attempts if attempts <= 1)
+    attempt_breakdown = quiz_service.build_attempt_credit_breakdown(resolved_attempts)
+    total_attempts = sum(int(response.attempts or 0) for response in responses)
+    required_pass_percentage = int(session.required_pass_percentage or 0)
+    passed = round(weighted_accuracy * 100, 2) >= required_pass_percentage
+
+    topic_performance: list = []
+    for concept_id in session.concept_ids or []:
+        concept = concept_map.get(concept_id)
+        if not concept:
+            continue
+        responses_for_topic = response_map.get(concept_id, [])
+        topic_attempts = [
+            int(item.attempts or 0)
+            for item in responses_for_topic
+            if bool(item.is_correct)
+        ]
+        topic_credit = sum(quiz_service.compute_attempt_credit(attempts) for attempts in topic_attempts)
+        total_questions = len(responses_for_topic)
+        highlights: list[str] = []
+        material = await study_material_repository.get_latest_material(concept_id, published_only=True)
+        if material and material.content:
+            content = LearningContent(**material.content)
+            highlights = list(content.highlights or [])[:2]
+        topic_performance.append(
+            quiz_service.build_topic_performance(
+                concept_id=concept_id,
+                concept_name=concept.name,
+                scored_correct_count=len(topic_attempts),
+                total_questions=total_questions,
+                accuracy=(topic_credit / total_questions) if total_questions else 0.0,
+                highlights=highlights,
+            )
+        )
+
+    report = quiz_service.build_report(
+        session_id=session.id,
+        subject_id=session.subject_id,
+        subject_name=subject_name,
+        total_questions=session.total_questions,
+        scored_correct_count=len(resolved_attempts),
+        accuracy=weighted_accuracy,
+        session_type=QuizSessionType.topic_assessment,
+        required_pass_percentage=session.required_pass_percentage,
+        passed=passed,
+        completed_at=session.completed_at or datetime.now(timezone.utc),
+        topic_performance=topic_performance,
+        metadata={
+            "attempted_questions": len(responses),
+            "total_attempts": total_attempts,
+            "resolved_questions": len(resolved_attempts),
+            "first_attempt_correct_count": first_attempt_correct_count,
+            "weighted_score_percent": round(weighted_accuracy * 100, 2),
+            "earned_credit": round(earned_credit, 2),
+            "max_credit": session.total_questions,
+            "attempt_credit_breakdown": attempt_breakdown,
+            "scoring_model": "weighted_attempt_accuracy",
+        },
+    )
+    session.report = report.model_dump(mode="json")
+    session.passed = passed
+    await quiz_repository.update_session(session)
+    return report
+
+
 def _was_first_attempt_correct(response: QuizResponse) -> bool:
     attempt_log = list(response.attempt_log or [])
     if attempt_log:
@@ -670,10 +943,10 @@ def _was_first_attempt_correct(response: QuizResponse) -> bool:
     return bool(response.is_correct and int(response.attempts or 0) <= 1)
 
 
-def _report_uses_first_attempt_scoring(session: QuizSession) -> bool:
+def _report_uses_known_scoring_model(session: QuizSession) -> bool:
     if not isinstance(session.report, dict):
         return False
     meta = session.report.get("meta")
     if not isinstance(meta, dict):
         return False
-    return meta.get("scoring_model") == "first_attempt_accuracy"
+    return meta.get("scoring_model") in {"first_attempt_accuracy", "weighted_attempt_accuracy"}

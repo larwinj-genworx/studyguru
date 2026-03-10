@@ -11,6 +11,7 @@ from src.schemas.quiz import (
     QuizSessionResponse,
     QuizSessionStartRequest,
     QuizSessionStartResponse,
+    TopicAssessmentStartRequest,
 )
 
 router = APIRouter(tags=["quiz"])
@@ -27,6 +28,19 @@ async def start_quiz_session(
     current_user: dict = Depends(get_current_user),
 ) -> QuizSessionStartResponse:
     return await quiz_app_service.start_student_quiz(payload, user_id=current_user["id"])
+
+
+@router.post(
+    "/student/assessments",
+    response_model=QuizSessionStartResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role("student"))],
+)
+async def start_topic_assessment(
+    payload: TopicAssessmentStartRequest,
+    current_user: dict = Depends(get_current_user),
+) -> QuizSessionStartResponse:
+    return await quiz_app_service.start_topic_assessment(payload, user_id=current_user["id"])
 
 
 @router.get(

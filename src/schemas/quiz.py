@@ -13,9 +13,24 @@ class QuizSessionStatus(str, Enum):
     abandoned = "abandoned"
 
 
+class QuizSessionType(str, Enum):
+    custom_practice = "custom_practice"
+    topic_assessment = "topic_assessment"
+
+
+class QuizQuestionSourceType(str, Enum):
+    custom_practice = "custom_practice"
+    topic_assessment = "topic_assessment"
+
+
 class QuizSessionStartRequest(BaseModel):
     subject_id: str
     concept_ids: list[str] = Field(min_length=1, max_length=30)
+
+
+class TopicAssessmentStartRequest(BaseModel):
+    subject_id: str
+    concept_id: str
 
 
 class QuizAnswerRequest(BaseModel):
@@ -35,12 +50,15 @@ class QuizSessionResponse(BaseModel):
     session_id: str
     subject_id: str
     subject_name: str
+    session_type: QuizSessionType = QuizSessionType.custom_practice
     status: QuizSessionStatus
     total_questions: int
     current_index: int
     correct_count: int
     incorrect_count: int
     first_attempt_correct_count: int
+    required_pass_percentage: int | None = None
+    passed: bool | None = None
     started_at: datetime
     completed_at: datetime | None = None
     topics: list[QuizTopicSummary] = Field(default_factory=list)
@@ -76,9 +94,12 @@ class QuizReportResponse(BaseModel):
     session_id: str
     subject_id: str
     subject_name: str
+    session_type: QuizSessionType = QuizSessionType.custom_practice
     total_questions: int
     correct_count: int
     accuracy: float
+    required_pass_percentage: int | None = None
+    passed: bool | None = None
     completed_at: datetime
     topic_breakdown: list[QuizTopicPerformance] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)

@@ -6,20 +6,45 @@ from sqlalchemy import desc, select
 
 from src.data.clients.postgres import AsyncSessionFactory
 from src.data.models.postgres.models import QuizQuestion, QuizResponse, QuizSession
+from src.schemas.quiz import QuizQuestionSourceType
 
 
 async def list_questions_for_concept(
     concept_id: str,
     material_version: int,
+    source_type: QuizQuestionSourceType | None = None,
 ) -> list[QuizQuestion]:
     async with AsyncSessionFactory() as session:
-        result = await session.execute(
-            select(QuizQuestion).where(
-                QuizQuestion.concept_id == concept_id,
-                QuizQuestion.material_version == material_version,
-            )
+        stmt = select(QuizQuestion).where(
+            QuizQuestion.concept_id == concept_id,
+            QuizQuestion.material_version == material_version,
         )
+        if source_type is not None:
+            stmt = stmt.where(QuizQuestion.source_type == source_type)
+        result = await session.execute(stmt)
         return result.scalars().all()
+
+
+async def replace_questions_for_concept_version(
+    concept_id: str,
+    material_version: int,
+    source_type: QuizQuestionSourceType,
+    questions: list[QuizQuestion],
+) -> list[QuizQuestion]:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            result = await session.execute(
+                select(QuizQuestion).where(
+                    QuizQuestion.concept_id == concept_id,
+                    QuizQuestion.material_version == material_version,
+                    QuizQuestion.source_type == source_type,
+                )
+            )
+            for existing in result.scalars().all():
+                await session.delete(existing)
+            session.add_all(questions)
+            await session.flush()
+        return questions
 
 
 async def get_question(question_id: str) -> QuizQuestion | None:
@@ -78,12 +103,17 @@ async def update_session(session_model: QuizSession) -> None:
             db_session = await session.get(QuizSession, session_model.id)
             if not db_session:
                 return
+            db_session.subject_id = session_model.subject_id
+            db_session.session_type = session_model.session_type
             db_session.status = session_model.status
+            db_session.gated_concept_id = session_model.gated_concept_id
             db_session.current_index = session_model.current_index
             db_session.total_questions = session_model.total_questions
             db_session.correct_count = session_model.correct_count
             db_session.incorrect_count = session_model.incorrect_count
             db_session.score_percent = session_model.score_percent
+            db_session.required_pass_percentage = session_model.required_pass_percentage
+            db_session.passed = session_model.passed
             db_session.question_ids = session_model.question_ids
             db_session.concept_ids = session_model.concept_ids
             db_session.session_meta = session_model.session_meta

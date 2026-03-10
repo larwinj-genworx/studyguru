@@ -48,12 +48,14 @@ class BaseStructuredAgent:
         goal: str,
         backstory: str,
         temperature: float = 0.2,
+        enable_json_mode: bool = True,
     ) -> None:
         self.settings = settings
         self.role = role
         self.goal = goal
         self.backstory = backstory
         self.temperature = temperature
+        self.enable_json_mode = enable_json_mode
         self._chat_llm = None
         self._chat_llm_json = None
         self._chat_llm_json_disabled = False
@@ -90,12 +92,13 @@ class BaseStructuredAgent:
         expected_output: str = "Strict JSON only.",
         required_keys: list[str] | None = None,
     ) -> dict[str, Any]:
+        self._last_llm_error = None
         failures: list[str] = []
         retries = max(self.settings.agent_retry_attempts, 1)
         for attempt in range(1, retries + 1):
             try:
                 with self._acquire_llm_slot():
-                    result = self._run_with_chat_json(prompt)
+                    result = self._run_with_chat_json(prompt) if self.enable_json_mode else None
                     if result is None:
                         result = self._run_with_chat(prompt)
                     if result is None:
@@ -149,7 +152,7 @@ class BaseStructuredAgent:
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
                 self._last_llm_error = f"ChatGroq produced non-JSON output: {exc}"
-                logger.warning(
+                logger.info(
                     "[AgentLLM:%s] ChatGroq returned non-JSON output (snippet): %s",
                     self.role,
                     snippet,
@@ -157,7 +160,7 @@ class BaseStructuredAgent:
                 return None
         except Exception as exc:
             self._last_llm_error = f"ChatGroq request failed: {exc}"
-            logger.warning("[AgentLLM:%s] ChatGroq request failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] ChatGroq request failed; trying fallback path: %s", self.role, exc)
             return None
 
     def _run_with_chat_json(self, prompt: str) -> dict[str, Any] | None:
@@ -212,7 +215,7 @@ class BaseStructuredAgent:
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
                 self._last_llm_error = f"ChatGroq JSON-mode produced non-JSON output: {exc}"
-                logger.warning(
+                logger.info(
                     "[AgentLLM:%s] ChatGroq JSON-mode returned non-JSON output (snippet): %s",
                     self.role,
                     snippet,
@@ -223,7 +226,7 @@ class BaseStructuredAgent:
             if "response_format" in message or "json_object" in message:
                 self._chat_llm_json_disabled = True
             self._last_llm_error = f"ChatGroq JSON-mode request failed: {exc}"
-            logger.warning("[AgentLLM:%s] ChatGroq JSON-mode failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] ChatGroq JSON-mode failed; trying fallback path: %s", self.role, exc)
             return None
 
     def _run_with_litellm(self, prompt: str) -> dict[str, Any] | None:
@@ -259,7 +262,7 @@ class BaseStructuredAgent:
             return self._extract_json(str(content))
         except Exception as exc:
             self._last_llm_error = f"LiteLLM request failed: {exc}"
-            logger.warning("[AgentLLM:%s] LiteLLM request failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] LiteLLM request failed: %s", self.role, exc)
             return None
 
     def _build_fallback_payload(self, *, prompt: str, required_keys: list[str] | None) -> dict[str, Any] | None:
