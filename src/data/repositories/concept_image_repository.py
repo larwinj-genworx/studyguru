@@ -17,7 +17,7 @@ async def list_images_for_material(
         stmt = (
             select(ConceptImageAsset)
             .where(ConceptImageAsset.concept_material_id == concept_material_id)
-            .order_by(desc(ConceptImageAsset.relevance_score), ConceptImageAsset.created_at)
+            .order_by(desc(ConceptImageAsset.relevance_score), desc(ConceptImageAsset.created_at))
         )
         if status is not None:
             stmt = stmt.where(ConceptImageAsset.status == status)
@@ -50,6 +50,14 @@ async def update_image_asset(asset: ConceptImageAsset) -> None:
             db_asset.caption = asset.caption
             db_asset.alt_text = asset.alt_text
             db_asset.intent_label = asset.intent_label
+            db_asset.prompt_text = asset.prompt_text
+            db_asset.focus_area = asset.focus_area
+            db_asset.complexity_level = asset.complexity_level
+            db_asset.visual_style = asset.visual_style
+            db_asset.generator_name = asset.generator_name
+            db_asset.explanation = asset.explanation
+            db_asset.learning_points = asset.learning_points
+            db_asset.render_spec = asset.render_spec
             db_asset.source_page_url = asset.source_page_url
             db_asset.source_image_url = asset.source_image_url
             db_asset.source_domain = asset.source_domain

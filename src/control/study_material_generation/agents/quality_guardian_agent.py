@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+import json
+import re
 from typing import Any
 
 from .base import BaseStructuredAgent
@@ -17,6 +20,46 @@ class QualityGuardianAgent(BaseStructuredAgent):
         "off-topic",
         "factual",
         "hallucinat",
+    )
+    _STEPWISE_EXAMPLE_ISSUE = "Practical examples need worked derivations or calculations for this concept."
+    _QUANTITATIVE_KEYWORDS = (
+        "equation",
+        "formula",
+        "derive",
+        "derivation",
+        "algebra",
+        "calculus",
+        "geometry",
+        "trigonometry",
+        "physics",
+        "chemistry",
+        "stoichiometry",
+        "kinematic",
+        "force",
+        "voltage",
+        "current",
+        "momentum",
+        "mole",
+        "concentration",
+        "probability",
+        "statistics",
+        "numerical",
+        "quantitative",
+    )
+    _STEPWISE_SIGNAL_KEYWORDS = (
+        "substitute",
+        "simplify",
+        "solve",
+        "calculate",
+        "derive",
+        "rearrange",
+        "therefore",
+        "hence",
+        "units",
+        "step",
+        "=",
+        "+",
+        "/",
     )
 
     def __init__(self, settings: Settings) -> None:
@@ -45,6 +88,9 @@ class QualityGuardianAgent(BaseStructuredAgent):
         practical_required = bool(content.get("practical_examples_required", True))
         if practical_required and len(content.get("examples", [])) < 3:
             blocking_issues.append("Need at least 3 practical examples.")
+        if practical_required and self._requires_stepwise_examples(concept_name, content):
+            if not self._has_enough_stepwise_examples(content.get("examples", [])):
+                blocking_issues.append(self._STEPWISE_EXAMPLE_ISSUE)
         if len(content.get("mcqs", [])) < 6:
             blocking_issues.append("Need at least 6 MCQs.")
         if len(content.get("flashcards", [])) < 8:
@@ -103,6 +149,7 @@ class QualityGuardianAgent(BaseStructuredAgent):
             "Definition is too short.": "Expand the definition with context, scope, and one practical use case.",
             "Definition is too long.": "Trim the definition to the core idea and remove repetition.",
             "Need at least 3 practical examples.": "Add worked examples that show step-by-step reasoning.",
+            self._STEPWISE_EXAMPLE_ISSUE: "Replace story-only examples with derivations, substitutions, or numerical steps that match the concept formulas.",
             "Need at least 6 MCQs.": "Add more MCQs that test concept understanding and application.",
             "Need at least 8 flashcards.": "Add recall flashcards covering terms, steps, and pitfalls.",
             "Need at least one validated reference.": "Add at least one reputable learning resource link.",
@@ -133,3 +180,69 @@ class QualityGuardianAgent(BaseStructuredAgent):
         if not normalized:
             return False
         return any(keyword in normalized for keyword in cls._BLOCKING_LLM_KEYWORDS)
+
+    @classmethod
+    def _requires_stepwise_examples(cls, concept_name: str, content: dict[str, Any]) -> bool:
+        formulas = content.get("formulas") or []
+        if isinstance(formulas, list) and any(str(item).strip() for item in formulas):
+            return True
+        text = " ".join(
+            [
+                concept_name,
+                str(content.get("definition", "")),
+                " ".join(str(item) for item in content.get("key_steps", []) or []),
+                " ".join(str(item) for item in formulas if str(item).strip()),
+            ]
+        ).lower()
+        return any(keyword in text for keyword in cls._QUANTITATIVE_KEYWORDS)
+
+    @classmethod
+    def _has_enough_stepwise_examples(cls, examples: Any) -> bool:
+        if not isinstance(examples, list) or not examples:
+            return False
+        signal_count = 0
+        target = min(3, len(examples))
+        for example in examples:
+            example_text = cls._example_to_text(example).lower()
+            if not example_text:
+                continue
+            has_signal = any(keyword in example_text for keyword in cls._STEPWISE_SIGNAL_KEYWORDS)
+            if has_signal or any(char.isdigit() for char in example_text):
+                signal_count += 1
+            if signal_count >= target:
+                return True
+        return False
+
+    @classmethod
+    def _example_to_text(cls, example: Any) -> str:
+        if isinstance(example, dict):
+            pieces = [
+                str(example.get("title", "")),
+                str(example.get("prompt", "")),
+                str(example.get("result", "")),
+            ]
+            pieces.extend(str(item) for item in example.get("steps", []) or [])
+            return " ".join(piece.strip() for piece in pieces if piece and piece.strip()).strip()
+        if isinstance(example, str):
+            text = example.strip()
+            if not text:
+                return ""
+            parsed = cls._parse_structured_text(text)
+            if parsed is not None:
+                return cls._example_to_text(parsed)
+            return re.sub(r"\s+", " ", text).strip()
+        return str(example).strip()
+
+    @staticmethod
+    def _parse_structured_text(raw_text: str) -> Any | None:
+        text = raw_text.strip()
+        if not text or not (text.startswith("{") or text.startswith("[")):
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        try:
+            return ast.literal_eval(text)
+        except Exception:
+            return None
