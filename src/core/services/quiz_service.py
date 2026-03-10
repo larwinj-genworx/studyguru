@@ -8,6 +8,7 @@ from src.schemas.quiz import (
     QuizQuestionResponse,
     QuizReportResponse,
     QuizSessionResponse,
+    QuizSessionType,
     QuizTopicPerformance,
     QuizTopicSummary,
 )
@@ -170,6 +171,30 @@ def sanitize_hints(
     return cleaned[:3]
 
 
+def compute_attempt_credit(attempts: int) -> float:
+    if attempts <= 1:
+        return 1.0
+    if attempts == 2:
+        return 0.7
+    return 0.4
+
+
+def build_attempt_credit_breakdown(attempts_used: list[int]) -> dict[str, int]:
+    breakdown = {
+        "first_attempt_correct": 0,
+        "second_attempt_correct": 0,
+        "third_plus_attempt_correct": 0,
+    }
+    for attempts in attempts_used:
+        if attempts <= 1:
+            breakdown["first_attempt_correct"] += 1
+        elif attempts == 2:
+            breakdown["second_attempt_correct"] += 1
+        else:
+            breakdown["third_plus_attempt_correct"] += 1
+    return breakdown
+
+
 def build_quiz_question_response(
     *,
     question_id: str,
@@ -198,12 +223,15 @@ def build_session_response(
     session_id: str,
     subject_id: str,
     subject_name: str,
+    session_type: QuizSessionType,
     status: str,
     total_questions: int,
     current_index: int,
     correct_count: int,
     incorrect_count: int,
     first_attempt_correct_count: int,
+    required_pass_percentage: int | None,
+    passed: bool | None,
     started_at: Any,
     completed_at: Any,
     topics: list[QuizTopicSummary],
@@ -212,12 +240,15 @@ def build_session_response(
         session_id=session_id,
         subject_id=subject_id,
         subject_name=subject_name,
+        session_type=session_type,
         status=status,
         total_questions=total_questions,
         current_index=current_index,
         correct_count=correct_count,
         incorrect_count=incorrect_count,
         first_attempt_correct_count=first_attempt_correct_count,
+        required_pass_percentage=required_pass_percentage,
+        passed=passed,
         started_at=started_at,
         completed_at=completed_at,
         topics=topics,
@@ -230,12 +261,15 @@ def build_report(
     subject_id: str,
     subject_name: str,
     total_questions: int,
-    first_attempt_correct_count: int,
+    scored_correct_count: int,
+    accuracy: float,
+    session_type: QuizSessionType = QuizSessionType.custom_practice,
+    required_pass_percentage: int | None = None,
+    passed: bool | None = None,
     completed_at: Any,
     topic_performance: list[QuizTopicPerformance],
     metadata: dict[str, Any] | None = None,
 ) -> QuizReportResponse:
-    accuracy = (first_attempt_correct_count / total_questions) if total_questions else 0.0
     recommendations: list[str] = []
     if accuracy < 0.6:
         recommendations.append("Focus on the weakest topics and review their core steps again.")
@@ -248,9 +282,12 @@ def build_report(
         session_id=session_id,
         subject_id=subject_id,
         subject_name=subject_name,
+        session_type=session_type,
         total_questions=total_questions,
-        correct_count=first_attempt_correct_count,
+        correct_count=scored_correct_count,
         accuracy=round(accuracy, 3),
+        required_pass_percentage=required_pass_percentage,
+        passed=passed,
         completed_at=completed_at,
         topic_breakdown=topic_performance,
         recommendations=recommendations,
@@ -262,11 +299,11 @@ def build_topic_performance(
     *,
     concept_id: str,
     concept_name: str,
-    first_attempt_correct_count: int,
+    scored_correct_count: int,
     total_questions: int,
+    accuracy: float,
     highlights: list[str] | None = None,
 ) -> QuizTopicPerformance:
-    accuracy = (first_attempt_correct_count / total_questions) if total_questions else 0.0
     status = "strong"
     if accuracy < 0.6:
         status = "focus"
@@ -277,7 +314,7 @@ def build_topic_performance(
         concept_id=concept_id,
         concept_name=concept_name,
         accuracy=round(accuracy, 3),
-        correct_count=first_attempt_correct_count,
+        correct_count=scored_correct_count,
         total_questions=total_questions,
         status=status,
         recommendations=recommendations,

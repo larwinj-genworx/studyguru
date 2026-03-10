@@ -37,7 +37,8 @@ class PracticeRecallAgent(BaseStructuredAgent):
             f"Revision Feedback: {revision_feedback or 'None'}\n"
             f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with keys: mcqs (6-10 items), flashcards (8-15 items). "
-            "Each MCQ should have question, options (exactly 4), answer (one of the options), explanation. "
+            "Each MCQ should have question, options (exactly 4), answer (one of the options), explanation, "
+            "and hints (exactly 3 short hints that do not reveal the answer directly). "
             "Each flashcard should have question and answer. "
             "Keep the practice items grounded in the evidence pack and aligned with the worked examples. "
             "If Revision Feedback is provided, fix those issues first. "
@@ -61,12 +62,14 @@ class PracticeRecallAgent(BaseStructuredAgent):
             answer = str(item.get("answer", "")).strip()
             if not question or not answer or not explanation:
                 continue
+            hints = [str(hint).strip() for hint in item.get("hints", []) if str(hint).strip()]
             mcqs.append(
                 {
                     "question": question,
                     "options": options[:4],
                     "answer": answer,
                     "explanation": explanation,
+                    "hints": hints[:3],
                 }
             )
         if len(mcqs) < 6:

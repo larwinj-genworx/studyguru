@@ -61,6 +61,18 @@ class QualityGuardianAgent(BaseStructuredAgent):
         "+",
         "/",
     )
+    _EVIDENCE_ONLY_ISSUE_KEYWORDS = (
+        "evidence snippet",
+        "evidence snippets",
+        "source snippet",
+        "source snippets",
+        "retrieval",
+        "retrieved source",
+        "reference coverage",
+        "source coverage",
+        "source document",
+        "source documents",
+    )
 
     def __init__(self, settings: Settings) -> None:
         super().__init__(
@@ -123,6 +135,8 @@ class QualityGuardianAgent(BaseStructuredAgent):
                     f"Content Draft: {content}\n"
                     f"Evidence Pack:\n{evidence_text}\n\n"
                     "Review the draft for factual grounding, topic drift, grade appropriateness, and unsupported claims. "
+                    "Focus on issues in the content draft itself. "
+                    "If the evidence pack contains a weak or slightly off-topic snippet but the draft stays concept-correct, treat that as advisory guidance, not a blocking issue. "
                     "If evidence is limited, allow cautious explanatory wording, but flag statements that look stronger than the evidence. "
                     "Return JSON with keys: approved (boolean), issues (list), guidance (list). "
                     "Output JSON only without markdown fences."
@@ -138,7 +152,10 @@ class QualityGuardianAgent(BaseStructuredAgent):
             normalized_issue = issue.strip()
             if not normalized_issue:
                 continue
-            if self._is_blocking_llm_issue(normalized_issue):
+            if self._is_evidence_only_issue(normalized_issue):
+                if normalized_issue not in advisory_issues:
+                    advisory_issues.append(normalized_issue)
+            elif self._is_blocking_llm_issue(normalized_issue):
                 if normalized_issue not in blocking_issues:
                     blocking_issues.append(normalized_issue)
             elif normalized_issue not in advisory_issues:
@@ -180,6 +197,15 @@ class QualityGuardianAgent(BaseStructuredAgent):
         if not normalized:
             return False
         return any(keyword in normalized for keyword in cls._BLOCKING_LLM_KEYWORDS)
+
+    @classmethod
+    def _is_evidence_only_issue(cls, issue: str) -> bool:
+        normalized = issue.strip().lower()
+        if not normalized:
+            return False
+        if "topic drift" in normalized and "snippet" in normalized:
+            return True
+        return any(keyword in normalized for keyword in cls._EVIDENCE_ONLY_ISSUE_KEYWORDS)
 
     @classmethod
     def _requires_stepwise_examples(cls, concept_name: str, content: dict[str, Any]) -> bool:

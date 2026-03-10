@@ -5,11 +5,19 @@ from datetime import datetime
 
 from fastapi import HTTPException, status
 
-from src.core.services import study_material_service
-from src.data.models.postgres.models import Concept, ConceptBookmark, LearningBotSession, QuizSession, Subject, SubjectEnrollment
+from src.core.services import progression_service, study_material_service
+from src.data.models.postgres.models import (
+    Concept,
+    ConceptBookmark,
+    LearningBotSession,
+    QuizSession,
+    StudentConceptProgress,
+    Subject,
+    SubjectEnrollment,
+)
 from src.data.repositories import auth_repository, learning_bot_repository, quiz_repository, study_material_repository
 from src.schemas.learning_bot import LearningBotMessageRole
-from src.schemas.quiz import QuizSessionStatus, QuizTopicPerformance
+from src.schemas.quiz import QuizSessionStatus, QuizSessionType, QuizTopicPerformance
 from src.schemas.study_material import (
     AdminEnrolledStudentResponse,
     AdminStudentActivityResponse,
@@ -20,6 +28,9 @@ from src.schemas.study_material import (
     MaterialLifecycleStatus,
     StudentActivityEventResponse,
     StudentActivityOverviewResponse,
+    StudentSubjectProgressResponse,
+    StudentTopicProgressResponse,
+    StudentTopicProgressState,
     SubjectEnrollmentResponse,
     SubjectResponse,
 )
@@ -94,6 +105,10 @@ async def list_admin_subject_enrollments(
     user_map = {user.id: user for user in users if user.role.lower() == "student"}
 
     bookmarks = await study_material_repository.list_bookmarks_for_users(student_ids, subject_id=subject.id)
+    progress_rows = await study_material_repository.list_student_concept_progress_for_users(
+        student_ids=student_ids,
+        subject_id=subject.id,
+    )
     quiz_sessions = await quiz_repository.list_sessions_for_subject(subject.id, user_ids=student_ids)
     learning_sessions = await learning_bot_repository.list_sessions_for_subject(subject.id, user_ids=student_ids)
     learning_message_counts = await learning_bot_repository.count_messages_by_session_ids(
@@ -101,6 +116,7 @@ async def list_admin_subject_enrollments(
     )
 
     bookmark_map = _group_by_user(bookmarks)
+    progress_map = _group_progress_by_user(progress_rows)
     quiz_map = _group_by_user(quiz_sessions)
     learning_map = _group_by_user(learning_sessions)
     trackable_concept_ids = {concept.id for concept in trackable_concepts}
@@ -110,6 +126,11 @@ async def list_admin_subject_enrollments(
         user = user_map.get(enrollment.student_id)
         if not user:
             continue
+        subject_progress = progression_service.build_student_subject_progress(
+            subject=subject,
+            concepts=trackable_concepts,
+            progress_map=progress_map.get(enrollment.student_id, {}),
+        )
         overview = _build_overview(
             enrollment=enrollment,
             trackable_concept_ids=trackable_concept_ids,
@@ -117,6 +138,7 @@ async def list_admin_subject_enrollments(
             quiz_sessions=quiz_map.get(enrollment.student_id, []),
             learning_sessions=learning_map.get(enrollment.student_id, []),
             learning_message_counts=learning_message_counts,
+            subject_progress=subject_progress,
         )
         responses.append(
             AdminEnrolledStudentResponse(
@@ -152,6 +174,7 @@ async def get_admin_student_activity(
     concept_name_map = {concept.id: concept.name for concept in concepts}
 
     bookmarks = await study_material_repository.list_bookmarks(student_id, subject_id=subject.id)
+    progress_rows = await study_material_repository.list_student_concept_progress(student_id, subject.id)
     quiz_sessions = await quiz_repository.list_sessions_for_subject(subject.id, user_ids=[student_id])
     learning_sessions = await learning_bot_repository.list_sessions_for_subject(subject.id, user_ids=[student_id])
     learning_message_counts = await learning_bot_repository.count_messages_by_session_ids(
@@ -161,6 +184,11 @@ async def get_admin_student_activity(
         [session.id for session in learning_sessions],
         role=LearningBotMessageRole.user,
     )
+    subject_progress = progression_service.build_student_subject_progress(
+        subject=subject,
+        concepts=trackable_concepts,
+        progress_map={row.concept_id: row for row in progress_rows},
+    )
 
     overview = _build_overview(
         enrollment=enrollment,
@@ -169,6 +197,7 @@ async def get_admin_student_activity(
         quiz_sessions=quiz_sessions,
         learning_sessions=learning_sessions,
         learning_message_counts=learning_message_counts,
+        subject_progress=subject_progress,
     )
 
     return AdminStudentActivityResponse(
@@ -181,6 +210,7 @@ async def get_admin_student_activity(
         overview=overview,
         concept_activity=_build_concept_activity(
             concepts=trackable_concepts,
+            subject_progress=subject_progress,
             bookmarks=bookmarks,
             quiz_sessions=quiz_sessions,
             learning_sessions=learning_sessions,
@@ -228,6 +258,15 @@ def _group_by_user(items: list[ConceptBookmark] | list[QuizSession] | list[Learn
     return grouped
 
 
+def _group_progress_by_user(
+    items: list[StudentConceptProgress],
+) -> dict[str, dict[str, StudentConceptProgress]]:
+    grouped: dict[str, dict[str, StudentConceptProgress]] = defaultdict(dict)
+    for item in items:
+        grouped[item.student_id][item.concept_id] = item
+    return grouped
+
+
 def _get_trackable_concepts(concepts: list[Concept]) -> list[Concept]:
     tracked = [concept for concept in concepts if concept.material_status in _TRACKABLE_STATUSES]
     return tracked if tracked else concepts
@@ -241,6 +280,7 @@ def _build_overview(
     quiz_sessions: list[QuizSession],
     learning_sessions: list[LearningBotSession],
     learning_message_counts: dict[str, int],
+    subject_progress: StudentSubjectProgressResponse,
 ) -> StudentActivityOverviewResponse:
     bookmark_concept_ids = {
         bookmark.concept_id for bookmark in bookmarks if bookmark.concept_id in trackable_concept_ids
@@ -265,14 +305,25 @@ def _build_overview(
     last_activity_candidates.extend(_resolve_quiz_activity_at(session) for session in quiz_sessions)
     last_activity_candidates.extend(session.last_message_at for session in learning_sessions)
 
-    total_concepts = len(trackable_concept_ids)
+    current_topic = next((topic for topic in subject_progress.topics if topic.is_current), None)
+    failed_assessments = sum(
+        1 for topic in subject_progress.topics if topic.state == StudentTopicProgressState.retry_required
+    )
+    passed_assessments = sum(
+        1 for topic in subject_progress.topics if topic.state == StudentTopicProgressState.passed
+    )
+    total_concepts = subject_progress.total_topics or len(trackable_concept_ids)
     engaged_concepts = len(engaged_concept_ids)
-    progress_percent = round((engaged_concepts / total_concepts) * 100, 1) if total_concepts else 0.0
 
     return StudentActivityOverviewResponse(
         total_concepts=total_concepts,
         engaged_concepts=engaged_concepts,
-        progress_percent=progress_percent,
+        completed_topics=subject_progress.completed_topics,
+        progress_percent=subject_progress.progress_percent,
+        current_topic_name=current_topic.name if current_topic else None,
+        current_topic_order=current_topic.topic_order if current_topic else None,
+        failed_assessments=failed_assessments,
+        passed_assessments=passed_assessments,
         bookmarks_count=len(bookmarks),
         total_quiz_sessions=len(quiz_sessions),
         completed_quizzes=len(completed_sessions),
@@ -299,12 +350,14 @@ def _collect_quiz_concept_ids(
 def _build_concept_activity(
     *,
     concepts: list[Concept],
+    subject_progress: StudentSubjectProgressResponse,
     bookmarks: list[ConceptBookmark],
     quiz_sessions: list[QuizSession],
     learning_sessions: list[LearningBotSession],
     learning_message_counts: dict[str, int],
 ) -> list[AdminStudentConceptActivityResponse]:
     bookmark_map = {bookmark.concept_id: bookmark for bookmark in bookmarks}
+    progress_topic_map = {topic.concept_id: topic for topic in subject_progress.topics}
     quiz_session_map: dict[str, list[QuizSession]] = defaultdict(list)
     quiz_accuracy_map: dict[str, list[float]] = defaultdict(list)
     learning_session_map: dict[str, list[LearningBotSession]] = defaultdict(list)
@@ -322,6 +375,7 @@ def _build_concept_activity(
 
     responses: list[AdminStudentConceptActivityResponse] = []
     for concept in concepts:
+        progress_topic = progress_topic_map.get(concept.id)
         concept_quizzes = quiz_session_map.get(concept.id, [])
         completed_quizzes = [
             session for session in concept_quizzes if session.status == QuizSessionStatus.completed
@@ -341,13 +395,24 @@ def _build_concept_activity(
             AdminStudentConceptActivityResponse(
                 concept_id=concept.id,
                 concept_name=concept.name,
+                topic_order=concept.topic_order,
+                pass_percentage=concept.pass_percentage,
                 status=_resolve_concept_status(
                     has_bookmark=concept.id in bookmark_map,
                     completed_quizzes=len(completed_quizzes),
                     best_accuracy=max(accuracy_values) if accuracy_values else None,
                     learning_sessions=len(concept_learning_sessions),
+                    progress_state=progress_topic.state if progress_topic else None,
                 ),
+                progress_state=progress_topic.state if progress_topic else None,
+                is_current=progress_topic.is_current if progress_topic else False,
                 has_bookmark=concept.id in bookmark_map,
+                learning_completed_at=progress_topic.learning_completed_at if progress_topic else None,
+                assessment_attempts=progress_topic.assessment_attempts if progress_topic else 0,
+                latest_score_percent=progress_topic.latest_score_percent if progress_topic else None,
+                best_score_percent=progress_topic.best_score_percent if progress_topic else None,
+                passed_at=progress_topic.passed_at if progress_topic else None,
+                blocker_message=progress_topic.blocker_message if progress_topic else None,
                 quiz_sessions=len(concept_quizzes),
                 completed_quizzes=len(completed_quizzes),
                 best_quiz_accuracy=max(accuracy_values) if accuracy_values else None,
@@ -365,7 +430,12 @@ def _resolve_concept_status(
     completed_quizzes: int,
     best_accuracy: float | None,
     learning_sessions: int,
+    progress_state: StudentTopicProgressState | None,
 ) -> str:
+    if progress_state == StudentTopicProgressState.passed:
+        return "strong"
+    if progress_state == StudentTopicProgressState.retry_required:
+        return "needs_support"
     engaged = has_bookmark or completed_quizzes > 0 or learning_sessions > 0
     if not engaged:
         return "not_started"
@@ -430,12 +500,16 @@ def _build_quiz_reports(
         reports.append(
             AdminStudentQuizReportResponse(
                 session_id=session.id,
+                session_type=session.session_type or QuizSessionType.custom_practice,
                 status=session.status,
                 started_at=session.started_at,
                 completed_at=session.completed_at,
                 accuracy=_extract_session_accuracy(session),
+                score_percent=session.score_percent,
                 correct_count=first_attempt_correct_count,
                 total_questions=session.total_questions,
+                required_pass_percentage=session.required_pass_percentage,
+                passed=session.passed,
                 topics=topic_breakdown,
                 recommendations=recommendations,
             )
@@ -479,26 +553,48 @@ def _build_recent_activity(
             if concept_id in concept_name_map
         ]
         accuracy = _extract_session_accuracy(session)
+        score_percent = (
+            round(float(session.score_percent), 1) if session.score_percent is not None else None
+        )
         if session.status == QuizSessionStatus.completed:
             description = None
-            if accuracy is not None:
+            title = "Completed a practice quiz"
+            event_type = "quiz_completed"
+            if session.session_type == QuizSessionType.topic_assessment:
+                title = "Passed topic assessment" if session.passed else "Completed topic assessment"
+                event_type = "topic_assessment_passed" if session.passed else "topic_assessment_completed"
+                if session.passed is False:
+                    title = "Retry needed after assessment"
+                    event_type = "topic_assessment_retry_required"
+            if score_percent is not None:
+                description = f"{score_percent}% score"
+            elif accuracy is not None:
                 description = f"{round(accuracy * 100)}% accuracy"
-                if concept_names:
-                    description = f"{description} across {', '.join(concept_names[:3])}"
+            if description and session.required_pass_percentage is not None:
+                description = (
+                    f"{description} against {session.required_pass_percentage}% requirement"
+                )
+            if description and concept_names:
+                description = f"{description} for {', '.join(concept_names[:3])}"
             events.append(
                 StudentActivityEventResponse(
-                    event_type="quiz_completed",
-                    title="Completed a quiz",
+                    event_type=event_type,
+                    title=title,
                     description=description,
                     occurred_at=session.completed_at or _resolve_quiz_activity_at(session),
                     concept_name=concept_names[0] if len(concept_names) == 1 else None,
                 )
             )
         else:
+            title = (
+                "Started topic assessment"
+                if session.session_type == QuizSessionType.topic_assessment
+                else "Started a practice quiz"
+            )
             events.append(
                 StudentActivityEventResponse(
                     event_type="quiz_started",
-                    title="Started a quiz",
+                    title=title,
                     description=", ".join(concept_names[:3]) if concept_names else None,
                     occurred_at=session.started_at,
                     concept_name=concept_names[0] if len(concept_names) == 1 else None,

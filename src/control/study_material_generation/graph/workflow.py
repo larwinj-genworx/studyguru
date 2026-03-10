@@ -11,15 +11,70 @@ from langgraph.graph import END, START, StateGraph
 
 from ..agents import AgentRegistry
 from src.config.settings import Settings
+from src.schemas.quiz import QuizQuestionSourceType
 from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobStatus, MaterialLifecycleStatus
-from src.data.models.postgres.models import ConceptMaterial
-from src.core.services import learning_content_service
-from src.data.repositories import workflow_repository, study_material_repository
+from src.data.models.postgres.models import ConceptMaterial, QuizQuestion
+from src.core.services import learning_content_service, quiz_service
+from src.data.repositories import workflow_repository, study_material_repository, quiz_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
 from ..renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def _build_topic_assessment_questions(
+    *,
+    subject_id: str,
+    concept_id: str,
+    concept_name: str,
+    material_version: int,
+    concept_pack: ConceptContentPack | None,
+) -> list[QuizQuestion]:
+    if not concept_pack:
+        return []
+    questions: list[QuizQuestion] = []
+    for item in concept_pack.mcqs:
+        if not isinstance(item, dict):
+            continue
+        question_text = str(item.get("question", "")).strip()
+        if len(question_text) < 10:
+            continue
+        options = [str(opt).strip() for opt in item.get("options", []) if str(opt).strip()]
+        options = list(dict.fromkeys(options))
+        if len(options) != 4:
+            continue
+        answer = str(item.get("answer", "")).strip()
+        if answer not in options:
+            normalized = {opt.lower(): opt for opt in options}
+            if answer.lower() not in normalized:
+                continue
+            answer = normalized[answer.lower()]
+        hints = [str(hint).strip() for hint in item.get("hints", []) if str(hint).strip()]
+        explanation = str(item.get("explanation", "")).strip() or None
+        difficulty = str(item.get("difficulty", "medium")).strip().lower()
+        if difficulty not in {"easy", "medium", "hard"}:
+            difficulty = "medium"
+        questions.append(
+            QuizQuestion(
+                subject_id=subject_id,
+                concept_id=concept_id,
+                material_version=material_version,
+                question=question_text,
+                options=options,
+                correct_option=answer,
+                hints=quiz_service.sanitize_hints(
+                    hints=hints,
+                    answer=answer,
+                    concept_name=concept_name,
+                    question=question_text,
+                ),
+                explanation=explanation,
+                difficulty=difficulty,
+                source_type=QuizQuestionSourceType.topic_assessment,
+            )
+        )
+    return questions
 
 
 class MaterialWorkflow:
@@ -711,6 +766,8 @@ class MaterialWorkflow:
         new_materials: list[ConceptMaterial] = []
         updated_materials: list[ConceptMaterial] = []
         updated_concepts = []
+        material_version_by_concept: dict[str, int] = {}
+        assessment_question_map: dict[str, list[QuizQuestion]] = {}
 
         for concept_id in concept_ids:
             concept_pack = concept_pack_map.get(concept_id)
@@ -774,6 +831,14 @@ class MaterialWorkflow:
                 concept_model.material_status = MaterialLifecycleStatus.draft
                 concept_model.material_version = material_version
                 updated_concepts.append(concept_model)
+            material_version_by_concept[concept_id] = material_version
+            assessment_question_map[concept_id] = _build_topic_assessment_questions(
+                subject_id=subject_record["subject_id"],
+                concept_id=concept_id,
+                concept_name=concept_name_by_id.get(concept_id, concept_id),
+                material_version=material_version,
+                concept_pack=concept_pack,
+            )
 
         if new_materials:
             await study_material_repository.create_concept_materials(new_materials)
@@ -781,6 +846,13 @@ class MaterialWorkflow:
             await study_material_repository.update_materials(updated_materials)
         if updated_concepts:
             await study_material_repository.update_concepts(updated_concepts)
+        for concept_id, questions in assessment_question_map.items():
+            await quiz_repository.replace_questions_for_concept_version(
+                concept_id=concept_id,
+                material_version=material_version_by_concept[concept_id],
+                source_type=QuizQuestionSourceType.topic_assessment,
+                questions=questions,
+            )
 
         output_dir = state.get("output_dir")
         job.output_dir = Path(output_dir).name if output_dir else None

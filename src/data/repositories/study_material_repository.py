@@ -11,6 +11,7 @@ from src.data.models.postgres.models import (
     ConceptVideoFeedback,
     MaterialJob,
     MaterialJobConcept,
+    StudentConceptProgress,
     Subject,
     SubjectEnrollment,
 )
@@ -102,7 +103,9 @@ async def create_subject_enrollment(student_id: str, subject_id: str) -> Subject
 async def list_concepts(subject_id: str) -> list[Concept]:
     async with AsyncSessionFactory() as session:
         result = await session.execute(
-            select(Concept).where(Concept.subject_id == subject_id).order_by(Concept.created_at)
+            select(Concept)
+            .where(Concept.subject_id == subject_id)
+            .order_by(Concept.topic_order, Concept.created_at)
         )
         return result.scalars().all()
 
@@ -116,6 +119,38 @@ async def add_concepts(concepts: list[Concept]) -> None:
     async with AsyncSessionFactory() as session:
         async with session.begin():
             session.add_all(concepts)
+
+
+async def save_concept_plan(
+    *,
+    updated_concepts: list[Concept],
+    new_concepts: list[Concept],
+) -> None:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            db_concepts: dict[str, Concept] = {}
+            temporary_offset = 1000 + len(updated_concepts) + len(new_concepts)
+
+            for index, concept in enumerate(updated_concepts, start=1):
+                db_concept = await session.get(Concept, concept.id)
+                if not db_concept:
+                    continue
+                db_concepts[concept.id] = db_concept
+                db_concept.topic_order = temporary_offset + index
+
+            await session.flush()
+
+            for concept in updated_concepts:
+                db_concept = db_concepts.get(concept.id)
+                if not db_concept:
+                    continue
+                db_concept.name = concept.name
+                db_concept.description = concept.description
+                db_concept.topic_order = concept.topic_order
+                db_concept.pass_percentage = concept.pass_percentage
+
+            if new_concepts:
+                session.add_all(new_concepts)
 
 
 async def update_subject(subject: Subject) -> None:
@@ -138,6 +173,10 @@ async def update_concepts(concepts: list[Concept]) -> None:
                 db_concept = await session.get(Concept, concept.id)
                 if not db_concept:
                     continue
+                db_concept.name = concept.name
+                db_concept.description = concept.description
+                db_concept.topic_order = concept.topic_order
+                db_concept.pass_percentage = concept.pass_percentage
                 db_concept.material_status = concept.material_status
                 db_concept.material_version = concept.material_version
 
@@ -266,6 +305,70 @@ async def create_bookmark(user_id: str, concept_id: str) -> ConceptBookmark:
         return bookmark
 
 
+async def list_student_concept_progress(
+    student_id: str,
+    subject_id: str,
+) -> list[StudentConceptProgress]:
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(StudentConceptProgress)
+            .where(
+                StudentConceptProgress.student_id == student_id,
+                StudentConceptProgress.subject_id == subject_id,
+            )
+        )
+        return result.scalars().all()
+
+
+async def list_student_concept_progress_for_users(
+    *,
+    student_ids: list[str],
+    subject_id: str,
+) -> list[StudentConceptProgress]:
+    if not student_ids:
+        return []
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(StudentConceptProgress).where(
+                StudentConceptProgress.student_id.in_(student_ids),
+                StudentConceptProgress.subject_id == subject_id,
+            )
+        )
+        return result.scalars().all()
+
+
+async def get_student_concept_progress(
+    student_id: str,
+    concept_id: str,
+) -> StudentConceptProgress | None:
+    async with AsyncSessionFactory() as session:
+        return await session.get(
+            StudentConceptProgress,
+            {"student_id": student_id, "concept_id": concept_id},
+        )
+
+
+async def upsert_student_concept_progress(progress: StudentConceptProgress) -> StudentConceptProgress:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            existing = await session.get(
+                StudentConceptProgress,
+                {"student_id": progress.student_id, "concept_id": progress.concept_id},
+            )
+            if not existing:
+                session.add(progress)
+                return progress
+            existing.subject_id = progress.subject_id
+            existing.learning_completed_at = progress.learning_completed_at
+            existing.assessment_attempts = progress.assessment_attempts
+            existing.latest_score_percent = progress.latest_score_percent
+            existing.best_score_percent = progress.best_score_percent
+            existing.passed_at = progress.passed_at
+            existing.last_assessment_session_id = progress.last_assessment_session_id
+            existing.updated_at = datetime.now(timezone.utc)
+            return existing
+
+
 async def delete_bookmark(user_id: str, concept_id: str) -> None:
     async with AsyncSessionFactory() as session:
         async with session.begin():
@@ -326,6 +429,9 @@ async def delete_subject_data(subject_id: str) -> None:
             if concept_ids:
                 await session.execute(
                     delete(ConceptBookmark).where(ConceptBookmark.concept_id.in_(concept_ids))
+                )
+                await session.execute(
+                    delete(StudentConceptProgress).where(StudentConceptProgress.concept_id.in_(concept_ids))
                 )
                 await session.execute(
                     delete(SubjectEnrollment).where(SubjectEnrollment.subject_id == subject_id)

@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from src.schemas.learning_bot import LearningBotSessionStatus
-from src.schemas.quiz import QuizSessionStatus, QuizTopicPerformance
+from src.schemas.quiz import QuizSessionStatus, QuizSessionType, QuizTopicPerformance
 
 
 def utc_now() -> datetime:
@@ -37,10 +37,23 @@ class MaterialLifecycleStatus(str, Enum):
 class ConceptCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=600)
+    topic_order: int = Field(ge=1, le=500)
+    pass_percentage: int = Field(ge=1, le=100)
 
 
 class ConceptBulkCreate(BaseModel):
     concepts: list[ConceptCreate] = Field(min_length=1, max_length=50)
+
+
+class AdminConceptPlanItem(BaseModel):
+    concept_id: str | None = None
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=600)
+    pass_percentage: int = Field(ge=1, le=100)
+
+
+class AdminConceptPlanUpdateRequest(BaseModel):
+    concepts: list[AdminConceptPlanItem] = Field(min_length=1, max_length=50)
 
 
 class SubjectCreate(BaseModel):
@@ -129,10 +142,20 @@ class LearningContentUpdate(BaseModel):
     content: LearningContent
 
 
+class StudentTopicProgressState(str, Enum):
+    locked = "locked"
+    available = "available"
+    ready_for_assessment = "ready_for_assessment"
+    retry_required = "retry_required"
+    passed = "passed"
+
+
 class ConceptResponse(BaseModel):
     concept_id: str
     name: str
     description: str | None = None
+    topic_order: int
+    pass_percentage: int
     created_at: datetime
     material_status: MaterialLifecycleStatus = MaterialLifecycleStatus.unavailable
     material_version: int = 0
@@ -155,6 +178,37 @@ class SubjectEnrollmentResponse(BaseModel):
     subject_id: str
     student_id: str
     enrolled_at: datetime
+
+
+class StudentTopicProgressResponse(BaseModel):
+    concept_id: str
+    name: str
+    description: str | None = None
+    topic_order: int
+    pass_percentage: int
+    material_status: MaterialLifecycleStatus
+    material_version: int = 0
+    state: StudentTopicProgressState
+    is_current: bool = False
+    is_locked: bool = False
+    learning_completed_at: datetime | None = None
+    passed_at: datetime | None = None
+    latest_score_percent: float | None = None
+    best_score_percent: float | None = None
+    assessment_attempts: int = 0
+    blocker_message: str | None = None
+
+
+class StudentSubjectProgressResponse(BaseModel):
+    subject_id: str
+    subject_name: str
+    grade_level: str
+    total_topics: int = 0
+    completed_topics: int = 0
+    progress_percent: float = 0
+    current_concept_id: str | None = None
+    current_concept_name: str | None = None
+    topics: list[StudentTopicProgressResponse] = Field(default_factory=list)
 
 
 class MaterialJobStatusResponse(BaseModel):
@@ -227,7 +281,12 @@ class ConceptResourcesResponse(BaseModel):
 class StudentActivityOverviewResponse(BaseModel):
     total_concepts: int = 0
     engaged_concepts: int = 0
+    completed_topics: int = 0
     progress_percent: float = 0
+    current_topic_name: str | None = None
+    current_topic_order: int | None = None
+    failed_assessments: int = 0
+    passed_assessments: int = 0
     bookmarks_count: int = 0
     total_quiz_sessions: int = 0
     completed_quizzes: int = 0
@@ -248,8 +307,18 @@ class AdminEnrolledStudentResponse(BaseModel):
 class AdminStudentConceptActivityResponse(BaseModel):
     concept_id: str
     concept_name: str
+    topic_order: int
+    pass_percentage: int
     status: str
+    progress_state: StudentTopicProgressState | None = None
+    is_current: bool = False
     has_bookmark: bool = False
+    learning_completed_at: datetime | None = None
+    assessment_attempts: int = 0
+    latest_score_percent: float | None = None
+    best_score_percent: float | None = None
+    passed_at: datetime | None = None
+    blocker_message: str | None = None
     quiz_sessions: int = 0
     completed_quizzes: int = 0
     best_quiz_accuracy: float | None = None
@@ -260,12 +329,16 @@ class AdminStudentConceptActivityResponse(BaseModel):
 
 class AdminStudentQuizReportResponse(BaseModel):
     session_id: str
+    session_type: QuizSessionType = QuizSessionType.custom_practice
     status: QuizSessionStatus
     started_at: datetime
     completed_at: datetime | None = None
     accuracy: float | None = None
+    score_percent: float | None = None
     correct_count: int = 0
     total_questions: int = 0
+    required_pass_percentage: int | None = None
+    passed: bool | None = None
     topics: list[QuizTopicPerformance] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
 

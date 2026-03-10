@@ -12,7 +12,7 @@ from src.data.models.postgres.base import Base, utc_now
 from src.schemas.concept_images import ConceptImageStatus
 from src.schemas.learning_bot import LearningBotMessageRole, LearningBotSessionStatus
 from src.schemas.study_material import JobStatus, MaterialLifecycleStatus, ReviewStatus
-from src.schemas.quiz import QuizSessionStatus
+from src.schemas.quiz import QuizQuestionSourceType, QuizSessionStatus, QuizSessionType
 
 
 class User(Base):
@@ -67,6 +67,8 @@ class Concept(Base):
     subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
+    topic_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    pass_percentage: Mapped[int] = mapped_column(Integer, nullable=False, default=70)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     material_status: Mapped[MaterialLifecycleStatus] = mapped_column(
         SAEnum(MaterialLifecycleStatus, name="material_lifecycle_status", native_enum=False),
@@ -74,7 +76,45 @@ class Concept(Base):
     )
     material_version: Mapped[int] = mapped_column(Integer, default=0)
 
+    __table_args__ = (
+        UniqueConstraint("subject_id", "topic_order", name="uq_concepts_subject_topic_order"),
+    )
+
     subject: Mapped["Subject"] = relationship(back_populates="concepts")
+
+
+class StudentConceptProgress(Base):
+    __tablename__ = "student_concept_progress"
+
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    concept_id: Mapped[str] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    learning_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    assessment_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    latest_score_percent: Mapped[float | None] = mapped_column(Float, default=None)
+    best_score_percent: Mapped[float | None] = mapped_column(Float, default=None)
+    passed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_assessment_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("quiz_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        default=None,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        Index("ix_student_concept_progress_subject_student", "subject_id", "student_id"),
+    )
 
 
 class MaterialJob(Base):
@@ -306,11 +346,16 @@ class QuizQuestion(Base):
     hints: Mapped[list] = mapped_column(JSONB, default=list)
     explanation: Mapped[str | None] = mapped_column(Text, default=None)
     difficulty: Mapped[str] = mapped_column(String(20), default="medium")
+    source_type: Mapped[QuizQuestionSourceType] = mapped_column(
+        SAEnum(QuizQuestionSourceType, name="quiz_question_source_type", native_enum=False),
+        default=QuizQuestionSourceType.custom_practice,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         Index("ix_quiz_questions_concept_version", "concept_id", "material_version"),
+        Index("ix_quiz_questions_concept_source", "concept_id", "source_type"),
     )
 
 
@@ -324,9 +369,19 @@ class QuizSession(Base):
         index=True,
         nullable=True,
     )
+    session_type: Mapped[QuizSessionType] = mapped_column(
+        SAEnum(QuizSessionType, name="quiz_session_type", native_enum=False),
+        default=QuizSessionType.custom_practice,
+    )
     status: Mapped[QuizSessionStatus] = mapped_column(
         SAEnum(QuizSessionStatus, name="quiz_session_status", native_enum=False),
         default=QuizSessionStatus.in_progress,
+    )
+    gated_concept_id: Mapped[str | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+        default=None,
     )
     concept_ids: Mapped[list] = mapped_column(JSONB, default=list)
     question_ids: Mapped[list] = mapped_column(JSONB, default=list)
@@ -335,6 +390,8 @@ class QuizSession(Base):
     correct_count: Mapped[int] = mapped_column(Integer, default=0)
     incorrect_count: Mapped[int] = mapped_column(Integer, default=0)
     score_percent: Mapped[float | None] = mapped_column(Float, default=None)
+    required_pass_percentage: Mapped[int | None] = mapped_column(Integer, default=None)
+    passed: Mapped[bool | None] = mapped_column(Boolean, default=None)
     session_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
     report: Mapped[dict | None] = mapped_column(JSONB, default=None)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

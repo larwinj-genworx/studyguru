@@ -161,6 +161,31 @@ class EvidenceRetrievalService:
         "404 not found",
         "uh oh!",
     )
+    _TOPIC_STOPWORDS = {
+        "about",
+        "after",
+        "basic",
+        "chapter",
+        "class",
+        "concept",
+        "example",
+        "examples",
+        "explained",
+        "grade",
+        "introduction",
+        "lesson",
+        "level",
+        "notes",
+        "overview",
+        "practice",
+        "revision",
+        "study",
+        "student",
+        "students",
+        "subject",
+        "topic",
+        "with",
+    }
     _NOISE_SELECTORS = (
         "script",
         "style",
@@ -226,6 +251,11 @@ class EvidenceRetrievalService:
             unavailable_domains=unavailable_domains,
             dead_urls=dead_urls,
         )
+        documents = self._filter_documents_for_topic(
+            documents,
+            concept_name=concept_name,
+            concept_description=concept_description,
+        )
         logger.info(
             (
                 "[EvidenceRetrievalService] Scraping process completed for concept='%s'. "
@@ -245,6 +275,11 @@ class EvidenceRetrievalService:
             query=f"{grade_level} {subject_name} {concept_name}",
             documents=documents[: self.settings.evidence_max_sources],
             max_snippets=max(self.settings.evidence_max_snippets, 4),
+        )
+        ranked_snippets = self._filter_snippets_for_topic(
+            ranked_snippets,
+            concept_name=concept_name,
+            concept_description=concept_description,
         )
         selected_documents = documents[: self.settings.evidence_max_sources]
         references = self._build_references(selected_documents, search_results, excluded_urls=dead_urls)
@@ -810,6 +845,109 @@ class EvidenceRetrievalService:
     @staticmethod
     def _clean_text(value: str) -> str:
         cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+        return cleaned
+
+    @classmethod
+    def _filter_documents_for_topic(
+        cls,
+        documents: list[SourceDocument],
+        *,
+        concept_name: str,
+        concept_description: str | None,
+    ) -> list[SourceDocument]:
+        anchors = cls._build_topic_anchors(concept_name=concept_name, concept_description=concept_description)
+        if not anchors:
+            return documents
+
+        filtered = [
+            document
+            for document in documents
+            if cls._text_matches_topic(
+                " ".join(
+                    [
+                        document.title,
+                        document.snippet,
+                        document.content_excerpt,
+                        document.query,
+                    ]
+                ),
+                anchors,
+            )
+        ]
+        if filtered:
+            return filtered
+        logger.info(
+            "[EvidenceRetrievalService] Topic relevance filter kept original documents for concept='%s' because all candidates were filtered out.",
+            concept_name,
+        )
+        return documents
+
+    @classmethod
+    def _filter_snippets_for_topic(
+        cls,
+        snippets: list[EvidenceSnippet],
+        *,
+        concept_name: str,
+        concept_description: str | None,
+    ) -> list[EvidenceSnippet]:
+        anchors = cls._build_topic_anchors(concept_name=concept_name, concept_description=concept_description)
+        if not anchors:
+            return snippets
+
+        filtered = [
+            snippet
+            for snippet in snippets
+            if cls._text_matches_topic(
+                " ".join([snippet.source_title, snippet.text, snippet.query]),
+                anchors,
+            )
+        ]
+        if filtered:
+            return filtered
+        logger.info(
+            "[EvidenceRetrievalService] Topic relevance filter kept original snippets for concept='%s' because all candidates were filtered out.",
+            concept_name,
+        )
+        return snippets
+
+    @classmethod
+    def _build_topic_anchors(
+        cls,
+        *,
+        concept_name: str,
+        concept_description: str | None,
+    ) -> list[str]:
+        anchors: list[str] = []
+        for token in re.findall(r"[A-Za-z][A-Za-z\-]{2,}", f"{concept_name} {concept_description or ''}".lower()):
+            normalized = cls._normalize_topic_token(token)
+            if not normalized or normalized in cls._TOPIC_STOPWORDS:
+                continue
+            if normalized not in anchors:
+                anchors.append(normalized)
+        return anchors[:8]
+
+    @classmethod
+    def _text_matches_topic(cls, text: str, anchors: list[str]) -> bool:
+        normalized_text = cls._clean_text(text).lower()
+        if not normalized_text or not anchors:
+            return False
+        for anchor in anchors:
+            if anchor in normalized_text:
+                return True
+        text_tokens = {
+            cls._normalize_topic_token(token)
+            for token in re.findall(r"[A-Za-z][A-Za-z\-]{2,}", normalized_text)
+        }
+        text_tokens.discard("")
+        return any(anchor in text_tokens for anchor in anchors)
+
+    @staticmethod
+    def _normalize_topic_token(token: str) -> str:
+        cleaned = re.sub(r"[^a-z]", "", token.lower())
+        if len(cleaned) > 4 and cleaned.endswith("es"):
+            cleaned = cleaned[:-2]
+        elif len(cleaned) > 3 and cleaned.endswith("s"):
+            cleaned = cleaned[:-1]
         return cleaned
 
     @staticmethod

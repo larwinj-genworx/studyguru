@@ -8,6 +8,7 @@ from src.schemas.study_material import (
     ArtifactIndex,
     SubjectEnrollmentResponse,
     ConceptBulkCreate,
+    AdminConceptPlanItem,
     ConceptCreate,
     ConceptMaterialRecord,
     ConceptMaterialResponse,
@@ -48,6 +49,25 @@ def build_concept(payload: ConceptCreate, subject_id: str) -> Concept:
         subject_id=subject_id,
         name=payload.name.strip(),
         description=payload.description,
+        topic_order=payload.topic_order,
+        pass_percentage=payload.pass_percentage,
+        material_status=MaterialLifecycleStatus.unavailable,
+        material_version=0,
+    )
+
+
+def build_concept_from_plan_item(
+    payload: AdminConceptPlanItem,
+    *,
+    subject_id: str,
+    topic_order: int,
+) -> Concept:
+    return Concept(
+        subject_id=subject_id,
+        name=payload.name.strip(),
+        description=payload.description,
+        topic_order=topic_order,
+        pass_percentage=payload.pass_percentage,
         material_status=MaterialLifecycleStatus.unavailable,
         material_version=0,
     )
@@ -110,6 +130,8 @@ def to_concept_response(concept: Concept) -> ConceptResponse:
         concept_id=concept.id,
         name=concept.name,
         description=concept.description,
+        topic_order=concept.topic_order,
+        pass_percentage=concept.pass_percentage,
         created_at=concept.created_at,
         material_status=concept.material_status,
         material_version=concept.material_version,

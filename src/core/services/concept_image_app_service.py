@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 from fastapi import HTTPException, status
@@ -16,6 +17,8 @@ from src.schemas.study_material import LearningContent, MaterialLifecycleStatus
 
 _settings = get_settings()
 _client = ConceptVisualMicroserviceClient(_settings)
+_logger = logging.getLogger(__name__)
+_LOCAL_MICROSERVICE_OUTPUT_DIR = Path(__file__).resolve().parents[4] / "ConceptVisualBackend" / "output" / "concept_visuals"
 
 
 async def get_admin_concept_images(
@@ -66,6 +69,14 @@ async def generate_admin_concept_images(
             _remove_paths(asset.local_image_path, asset.thumbnail_path)
         await concept_image_repository.delete_image_assets([asset.id for asset in removable])
 
+    max_variants = max(1, min(_settings.concept_image_max_candidates, 4))
+    if max_variants != _settings.concept_image_max_candidates:
+        _logger.warning(
+            "Clamped CONCEPT_IMAGE_MAX_CANDIDATES from %s to %s to satisfy the concept visual service contract.",
+            _settings.concept_image_max_candidates,
+            max_variants,
+        )
+
     rendered = await _client.render(
         ConceptVisualRenderRequest(
             subject_id=subject.id,
@@ -76,7 +87,7 @@ async def generate_admin_concept_images(
             concept_description=concept.description,
             concept_material_id=material.id,
             prompt=prompt,
-            max_variants=max(_settings.concept_image_max_candidates, 1),
+            max_variants=max_variants,
             content=content,
         )
     )
@@ -201,11 +212,8 @@ async def get_admin_concept_image_file_path(
         image_id=image_id,
     )
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
-    try:
-        path = concept_image_service.resolve_storage_path(_settings.concept_visual_output_dir, relative_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if not path.exists():
+    path = _resolve_existing_storage_path(relative_path)
+    if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found.")
     return path
 
@@ -248,11 +256,8 @@ async def get_student_concept_image_file_path(
     if asset.concept_material_id != material.id or asset.status != ConceptImageStatus.approved:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approved image not found.")
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
-    try:
-        path = concept_image_service.resolve_storage_path(_settings.concept_visual_output_dir, relative_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    if not path.exists():
+    path = _resolve_existing_storage_path(relative_path)
+    if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found.")
     return path
 
@@ -318,12 +323,33 @@ def _remove_paths(*relative_paths: str | None) -> None:
     for relative_path in relative_paths:
         if not relative_path:
             continue
+        for base_dir in _image_storage_roots():
+            try:
+                target = concept_image_service.resolve_storage_path(
+                    base_dir,
+                    relative_path,
+                )
+            except ValueError:
+                continue
+            if target.exists():
+                target.unlink(missing_ok=True)
+
+
+def _resolve_existing_storage_path(relative_path: str) -> Path | None:
+    for base_dir in _image_storage_roots():
         try:
-            target = concept_image_service.resolve_storage_path(
-                _settings.concept_visual_output_dir,
-                relative_path,
-            )
+            candidate = concept_image_service.resolve_storage_path(base_dir, relative_path)
         except ValueError:
             continue
-        if target.exists():
-            target.unlink(missing_ok=True)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _image_storage_roots() -> list[Path]:
+    roots: list[Path] = []
+    for base_dir in (_settings.concept_visual_output_dir, _LOCAL_MICROSERVICE_OUTPUT_DIR):
+        resolved = base_dir.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
