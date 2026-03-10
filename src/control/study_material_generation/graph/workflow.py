@@ -303,8 +303,11 @@ class MaterialWorkflow:
             core = item.get("core_notes", {})
             item["examples_pack"] = await asyncio.to_thread(
                 self.agents.worked_example.execute,
+                subject_name=state["subject_record"]["name"],
                 concept_name=item["concept_name"],
+                grade_level=state["subject_record"]["grade_level"],
                 key_steps=core.get("key_steps", []),
+                formulas=core.get("formulas", []),
                 revision_feedback=item.get("revision_feedback"),
                 practical_examples_required=bool(core.get("practical_examples_required", True)),
                 evidence_pack=item.get("evidence_pack"),
@@ -890,8 +893,11 @@ class MaterialWorkflow:
         item["formula_cards"] = formula_payload.get("formula_cards", [])
         item["examples_pack"] = await asyncio.to_thread(
             self.agents.worked_example.execute,
+            subject_name=subject["name"],
             concept_name=item["concept_name"],
+            grade_level=subject["grade_level"],
             key_steps=core.get("key_steps", []),
+            formulas=core.get("formulas", []),
             revision_feedback=item.get("revision_feedback"),
             practical_examples_required=bool(core.get("practical_examples_required", True)),
             evidence_pack=item.get("evidence_pack"),
@@ -916,6 +922,7 @@ class MaterialWorkflow:
         normalized = str(issue).strip().lower()
         return normalized in {
             "need at least 3 practical examples.",
+            "practical examples need worked derivations or calculations for this concept.",
             "need at least 6 mcqs.",
             "need at least 8 flashcards.",
         }

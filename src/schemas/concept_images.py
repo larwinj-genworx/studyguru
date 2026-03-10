@@ -18,14 +18,17 @@ class ConceptImageAssetResponse(BaseModel):
     title: str
     caption: str | None = None
     alt_text: str | None = None
-    intent_label: str | None = None
-    source_page_url: str | None = None
-    source_image_url: str | None = None
-    source_domain: str | None = None
+    prompt_text: str | None = None
+    focus_area: str | None = None
+    complexity_level: str | None = None
+    visual_style: str | None = None
+    generator_name: str | None = None
+    explanation: str | None = None
+    learning_points: list[str] = Field(default_factory=list)
     width: int | None = None
     height: int | None = None
     mime_type: str | None = None
-    relevance_score: float = 0.0
+    pedagogical_score: float = 0.0
     created_at: datetime
     approved_at: datetime | None = None
 
@@ -36,4 +39,12 @@ class ConceptImageCollectionResponse(BaseModel):
     concept_id: str
     concept_name: str
     material_version: int
+    prompt_text: str | None = None
+    focus_area: str | None = None
+    complexity_level: str | None = None
     images: list[ConceptImageAssetResponse] = Field(default_factory=list)
+
+
+class ConceptImageGenerationRequest(BaseModel):
+    prompt: str | None = Field(default=None, max_length=600)
+    refresh: bool = False

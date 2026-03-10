@@ -34,14 +34,25 @@ class Settings(BaseSettings):
     evidence_search_results_per_query: int = Field(default=3, alias="EVIDENCE_SEARCH_RESULTS_PER_QUERY")
     evidence_max_sources: int = Field(default=6, alias="EVIDENCE_MAX_SOURCES")
     evidence_max_snippets: int = Field(default=10, alias="EVIDENCE_MAX_SNIPPETS")
-    concept_image_output_dir: Path = Field(
-        default=Path("output/concept_images"),
-        alias="CONCEPT_IMAGE_OUTPUT_DIR",
+    concept_visual_output_dir: Path = Field(
+        default=Path("output/concept_visuals"),
+        validation_alias=AliasChoices("CONCEPT_VISUAL_OUTPUT_DIR", "CONCEPT_IMAGE_OUTPUT_DIR"),
     )
-    concept_image_max_candidates: int = Field(default=6, alias="CONCEPT_IMAGE_MAX_CANDIDATES")
-    concept_image_max_pages: int = Field(default=6, alias="CONCEPT_IMAGE_MAX_PAGES")
-    concept_image_min_width: int = Field(default=480, alias="CONCEPT_IMAGE_MIN_WIDTH")
-    concept_image_min_height: int = Field(default=320, alias="CONCEPT_IMAGE_MIN_HEIGHT")
+    concept_visual_service_url: str = Field(
+        default="http://127.0.0.1:8002",
+        alias="CONCEPT_VISUAL_SERVICE_URL",
+    )
+    concept_visual_service_token: str = Field(
+        default="studyguru-concept-visual-service",
+        alias="CONCEPT_VISUAL_SERVICE_TOKEN",
+    )
+    concept_visual_request_timeout_seconds: int = Field(
+        default=20,
+        alias="CONCEPT_VISUAL_REQUEST_TIMEOUT_SECONDS",
+    )
+    concept_image_max_candidates: int = Field(default=3, alias="CONCEPT_IMAGE_MAX_CANDIDATES")
+    concept_image_min_width: int = Field(default=960, alias="CONCEPT_IMAGE_MIN_WIDTH")
+    concept_image_min_height: int = Field(default=540, alias="CONCEPT_IMAGE_MIN_HEIGHT")
     learning_bot_history_limit: int = Field(default=8, alias="LEARNING_BOT_HISTORY_LIMIT")
     learning_bot_max_internal_chunks: int = Field(default=6, alias="LEARNING_BOT_MAX_INTERNAL_CHUNKS")
     learning_bot_max_external_chunks: int = Field(default=4, alias="LEARNING_BOT_MAX_EXTERNAL_CHUNKS")
@@ -71,7 +82,7 @@ class Settings(BaseSettings):
 
     def ensure_output_dir(self) -> None:
         self.material_output_dir.mkdir(parents=True, exist_ok=True)
-        self.concept_image_output_dir.mkdir(parents=True, exist_ok=True)
+        self.concept_visual_output_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def database_url(self) -> str:

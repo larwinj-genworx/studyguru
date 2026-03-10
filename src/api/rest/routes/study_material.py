@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from src.api.rest.dependencies import get_current_user, require_role
 from src.core.services import concept_image_app_service, enrollment_app_service, learning_bot_app_service, material_job_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
-from src.schemas.concept_images import ConceptImageCollectionResponse
+from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
 from src.schemas.learning_bot import (
     LearningBotMessageCreate,
     LearningBotSessionDetailResponse,
@@ -463,14 +463,15 @@ async def get_admin_concept_images(
 async def generate_admin_concept_images(
     subject_id: str,
     concept_id: str,
-    refresh: bool = Query(default=False),
+    payload: ConceptImageGenerationRequest,
     current_user: dict = Depends(get_current_user),
 ) -> ConceptImageCollectionResponse:
     return await concept_image_app_service.generate_admin_concept_images(
         subject_id=subject_id,
         concept_id=concept_id,
         owner_id=current_user["id"],
-        refresh=refresh,
+        prompt=payload.prompt,
+        refresh=payload.refresh,
     )
 
 

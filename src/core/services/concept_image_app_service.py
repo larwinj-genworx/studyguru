@@ -1,34 +1,21 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, status
 
 from src.config.settings import get_settings
-from src.control.concept_image_curation.services import ConceptImageCurationEngine
-from src.control.concept_image_curation.storage import ConceptImageStorageService
 from src.core.services import concept_image_service, learning_content_service
+from src.core.services.concept_visual_microservice_client import ConceptVisualMicroserviceClient
 from src.data.models.postgres.models import ConceptImageAsset
 from src.data.repositories import concept_image_repository, study_material_repository
+from src.schemas.concept_visual_microservice import ConceptVisualRenderRequest
 from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageStatus
 from src.schemas.study_material import LearningContent, MaterialLifecycleStatus
 
-
-logger = logging.getLogger("uvicorn.error")
-
 _settings = get_settings()
-_engine: ConceptImageCurationEngine | None = None
-_storage = ConceptImageStorageService(_settings)
-
-
-def _ensure_engine() -> ConceptImageCurationEngine:
-    global _engine
-    if _engine is not None:
-        return _engine
-    _engine = ConceptImageCurationEngine(_settings)
-    return _engine
+_client = ConceptVisualMicroserviceClient(_settings)
 
 
 async def get_admin_concept_images(
@@ -56,6 +43,7 @@ async def generate_admin_concept_images(
     subject_id: str,
     concept_id: str,
     owner_id: str,
+    prompt: str | None = None,
     refresh: bool = False,
 ) -> ConceptImageCollectionResponse:
     subject, concept, material, content = await _get_admin_material_context(
@@ -75,22 +63,22 @@ async def generate_admin_concept_images(
     removable = [asset for asset in existing if asset.status != ConceptImageStatus.approved]
     if removable:
         for asset in removable:
-            _storage.remove_paths(asset.local_image_path, asset.thumbnail_path)
+            _remove_paths(asset.local_image_path, asset.thumbnail_path)
         await concept_image_repository.delete_image_assets([asset.id for asset in removable])
 
-    approved_existing = [asset for asset in existing if asset.status == ConceptImageStatus.approved]
-    fingerprints = {asset.fingerprint for asset in approved_existing if asset.fingerprint}
-
-    engine = _ensure_engine()
-    curated = await engine.curate(
-        subject_id=subject.id,
-        subject_name=subject.name,
-        grade_level=subject.grade_level,
-        concept_name=concept.name,
-        concept_description=concept.description,
-        concept_material_id=material.id,
-        content=content,
-        existing_fingerprints=fingerprints,
+    rendered = await _client.render(
+        ConceptVisualRenderRequest(
+            subject_id=subject.id,
+            subject_name=subject.name,
+            grade_level=subject.grade_level,
+            concept_id=concept.id,
+            concept_name=concept.name,
+            concept_description=concept.description,
+            concept_material_id=material.id,
+            prompt=prompt,
+            max_variants=max(_settings.concept_image_max_candidates, 1),
+            content=content,
+        )
     )
     now = datetime.now(timezone.utc)
     assets = [
@@ -99,25 +87,30 @@ async def generate_admin_concept_images(
             concept_id=concept.id,
             concept_material_id=material.id,
             status=ConceptImageStatus.pending,
-            title=item.candidate.title,
-            caption=item.candidate.caption,
-            alt_text=item.candidate.alt_text,
-            intent_label=item.candidate.intent_label,
-            source_page_url=item.candidate.source_page_url,
-            source_image_url=item.candidate.source_image_url,
-            source_domain=item.candidate.source_domain,
-            local_image_path=item.stored.relative_image_path,
-            thumbnail_path=item.stored.relative_thumbnail_path,
-            mime_type=item.stored.mime_type,
-            width=item.stored.width,
-            height=item.stored.height,
-            file_size_bytes=item.stored.file_size_bytes,
-            fingerprint=item.stored.fingerprint,
-            relevance_score=item.candidate.relevance_score,
+            title=item.title,
+            caption=item.caption,
+            alt_text=item.alt_text,
+            intent_label=item.visual_style,
+            prompt_text=rendered.prompt,
+            focus_area=item.focus_area,
+            complexity_level=item.complexity_level,
+            visual_style=item.visual_style,
+            generator_name=item.generator_name,
+            explanation=item.explanation,
+            learning_points=item.learning_points,
+            render_spec=item.render_spec,
+            local_image_path=item.relative_image_path,
+            thumbnail_path=item.relative_thumbnail_path,
+            mime_type=item.mime_type,
+            width=item.width,
+            height=item.height,
+            file_size_bytes=item.file_size_bytes,
+            fingerprint=item.fingerprint,
+            relevance_score=item.pedagogical_score,
             created_at=now,
             updated_at=now,
         )
-        for item in curated
+        for item in rendered.assets
     ]
     if assets:
         await concept_image_repository.create_image_assets(assets)
@@ -209,7 +202,7 @@ async def get_admin_concept_image_file_path(
     )
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
     try:
-        path = concept_image_service.resolve_storage_path(_settings.concept_image_output_dir, relative_path)
+        path = concept_image_service.resolve_storage_path(_settings.concept_visual_output_dir, relative_path)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not path.exists():
@@ -256,7 +249,7 @@ async def get_student_concept_image_file_path(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approved image not found.")
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
     try:
-        path = concept_image_service.resolve_storage_path(_settings.concept_image_output_dir, relative_path)
+        path = concept_image_service.resolve_storage_path(_settings.concept_visual_output_dir, relative_path)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not path.exists():
@@ -319,3 +312,18 @@ async def _get_admin_image_asset(
     if not asset or asset.subject_id != subject_id or asset.concept_id != concept_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
     return asset
+
+
+def _remove_paths(*relative_paths: str | None) -> None:
+    for relative_path in relative_paths:
+        if not relative_path:
+            continue
+        try:
+            target = concept_image_service.resolve_storage_path(
+                _settings.concept_visual_output_dir,
+                relative_path,
+            )
+        except ValueError:
+            continue
+        if target.exists():
+            target.unlink(missing_ok=True)

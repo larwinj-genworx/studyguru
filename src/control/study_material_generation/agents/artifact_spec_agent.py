@@ -33,6 +33,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             f"Content Inputs: {content}\n\n"
             "Return final JSON with keys: definition, intuition, formulas, key_steps, common_mistakes, "
             "examples, mcqs, flashcards, references, recap. "
+            "If Content Inputs.examples already contains structured worked-example payloads, preserve that structure instead of rewriting them into generic summary sentences. "
             "Use empty lists where needed. "
             "Strict rule: final output must be coherent and fully bound to this concept. "
             "Do not invent or add references; use exactly the references provided in Content Inputs. "
@@ -48,7 +49,9 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             data.get("common_mistakes"),
             self.to_list(content.get("common_mistakes"), []),
         )[:6]
-        examples = self.to_list(data.get("examples"), self.to_list(content.get("examples"), []))[:5]
+        source_examples = self.to_list(content.get("examples"), [])
+        generated_examples = self.to_list(data.get("examples"), [])
+        examples = (source_examples or generated_examples)[:5]
         recap = self.to_list(data.get("recap"), self.to_list(content.get("recap"), []))[:8]
         if not definition or not intuition or not key_steps or not common_mistakes or not recap:
             raise ValueError("ArtifactSpecAgent produced incomplete concept payload.")

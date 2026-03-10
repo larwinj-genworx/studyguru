@@ -51,7 +51,8 @@ class StudyMaterialEngineAgent(BaseStructuredAgent):
             "3. Use the evidence pack as the factual base. If evidence is thin, use cautious wording and avoid unsupported claims.\n"
             "4. Keep the content concept-specific, non-repetitive, and structured for student learning.\n"
             "5. Include meaningful examples and formulas only when they are relevant and supported.\n"
-            "6. If revision feedback exists, fix those issues first.\n\n"
+            "6. Avoid markdown tables, HTML, or very long unbroken strings that can break downstream rendering.\n"
+            "7. If revision feedback exists, fix those issues first.\n\n"
             "Return strict JSON only in this format:\n"
             "{\n"
             '  "concept_analysis": {\n'

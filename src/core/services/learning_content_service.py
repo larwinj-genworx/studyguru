@@ -155,6 +155,7 @@ def build_learning_content(
             parsed = _parse_example_payload(str(example))
             steps = parsed["steps"]
             title = parsed["title"] or f"Example {index}"
+            prompt = parsed["prompt"]
             result = parsed["result"]
             example_children.append(
                 LearningSection(
@@ -165,8 +166,10 @@ def build_learning_content(
                         {
                             "type": "example",
                             "title": title,
+                            "prompt": prompt,
                             "steps": steps,
                             "result": result,
+                            "example_style": parsed["example_style"],
                         }
                     ],
                     children=[],
@@ -339,6 +342,9 @@ def _block_text(block: dict[str, Any]) -> Iterable[str]:
         return [str(content)]
     if block_type == "example":
         items = [str(block.get("title", ""))]
+        prompt = block.get("prompt")
+        if prompt:
+            items.append(str(prompt))
         items.extend([*map(str, block.get("steps") or [])])
         result = block.get("result")
         if result:
@@ -558,10 +564,14 @@ def normalize_learning_content(content: LearningContent) -> LearningContent:
                     parsed = _parse_example_payload(steps[0])
                     if parsed["title"]:
                         block["title"] = parsed["title"]
+                    if parsed["prompt"]:
+                        block["prompt"] = parsed["prompt"]
                     if parsed["steps"]:
                         block["steps"] = parsed["steps"]
                     if parsed["result"]:
                         block["result"] = parsed["result"]
+                    if parsed["example_style"]:
+                        block["example_style"] = parsed["example_style"]
             if block.get("type") == "formula":
                 if not block.get("title"):
                     formula_text = str(block.get("formula", "")).strip()
@@ -594,9 +604,16 @@ def _parse_example_payload(example_text: str) -> dict[str, Any]:
     if isinstance(parsed, dict):
         title = str(
             parsed.get("example")
-            or parsed.get("question")
-            or parsed.get("prompt")
             or parsed.get("title")
+            or ""
+        ).strip()
+        prompt = str(
+            parsed.get("prompt")
+            or parsed.get("question")
+            or parsed.get("problem")
+            or parsed.get("task")
+            or parsed.get("description")
+            or parsed.get("context")
             or ""
         ).strip()
         raw_steps = (
@@ -606,23 +623,20 @@ def _parse_example_payload(example_text: str) -> dict[str, Any]:
             or parsed.get("working")
             or parsed.get("process")
         )
-        description = parsed.get("description") or parsed.get("explanation") or parsed.get("context")
+        explanation = parsed.get("explanation") or parsed.get("note")
         if isinstance(raw_steps, list):
             steps = [str(item).strip() for item in raw_steps if str(item).strip()]
         elif isinstance(raw_steps, str):
             steps = _split_example_steps(raw_steps)
         else:
             steps = []
-        if description:
-            description_steps = _split_example_steps(str(description))
-            if description_steps:
-                if steps:
-                    steps = [*description_steps, *steps]
-                else:
-                    steps = description_steps
+        if not steps and explanation:
+            steps = _split_example_steps(str(explanation))
         result = str(parsed.get("final_answer") or parsed.get("answer") or parsed.get("result") or "").strip()
         if not steps:
             steps = _split_example_steps(example_text)
+        if prompt and title and prompt.lower() == title.lower():
+            title = ""
         deduped: list[str] = []
         seen: set[str] = set()
         for step in steps:
@@ -635,12 +649,19 @@ def _parse_example_payload(example_text: str) -> dict[str, Any]:
             seen.add(normalized)
             deduped.append(cleaned)
         steps = deduped
-        return {"title": title, "steps": steps, "result": result}
+        example_style = str(parsed.get("example_type") or parsed.get("style") or parsed.get("type") or "").strip()
+        return {
+            "title": title,
+            "prompt": prompt,
+            "steps": steps,
+            "result": result,
+            "example_style": example_style,
+        }
     if isinstance(parsed, list):
         steps = [str(item).strip() for item in parsed if str(item).strip()]
-        return {"title": "", "steps": steps, "result": ""}
+        return {"title": "", "prompt": "", "steps": steps, "result": "", "example_style": ""}
     steps = _split_example_steps(example_text)
-    return {"title": "", "steps": steps, "result": ""}
+    return {"title": "", "prompt": "", "steps": steps, "result": "", "example_style": ""}
 
 
 def _parse_formula_payload(formula_text: str) -> dict[str, Any]:
