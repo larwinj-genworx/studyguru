@@ -4,6 +4,7 @@ import json
 import unittest
 
 from src.config.settings import Settings
+from src.core.services import flashcard_service
 from src.control.study_material_generation.agents.quality_guardian_agent import QualityGuardianAgent
 from src.control.study_material_generation.agents.worked_example_agent import WorkedExampleAgent
 from src.control.study_material_generation.retrieval.models import EvidenceSnippet
@@ -55,6 +56,73 @@ class QualityGuardianAgentTests(unittest.TestCase):
         self.assertFalse(
             QualityGuardianAgent._is_evidence_only_issue("Unsupported formula in the content draft")
         )
+
+
+class FlashcardServiceTests(unittest.TestCase):
+    def test_build_flashcards_returns_concept_first_cards_with_hints(self) -> None:
+        cards = flashcard_service.build_flashcards(
+            concept_name="Photosynthesis",
+            definition=(
+                "Photosynthesis is the process by which green plants use sunlight, carbon "
+                "dioxide, and water to make glucose and release oxygen."
+            ),
+            intuition=(
+                "The plant captures light energy and stores it as chemical energy in food. "
+                "This is how the plant prepares its own nourishment."
+            ),
+            key_steps=[
+                "Absorb light energy using chlorophyll in the leaves.",
+                "Take in carbon dioxide from the air through stomata.",
+                "Use water from the roots and convert the inputs into glucose.",
+                "Release oxygen as a by-product of the process.",
+            ],
+            common_mistakes=[
+                "Confusing photosynthesis with respiration.",
+                "Forgetting that sunlight is required for the process.",
+            ],
+            recap=[
+                "Photosynthesis converts light energy into stored chemical energy.",
+                "The main raw materials are carbon dioxide and water.",
+            ],
+            formulas=["6CO2 + 6H2O -> C6H12O6 + 6O2"],
+            raw_flashcards=[
+                {
+                    "question": "What is photosynthesis?",
+                    "answer": "It is the food-making process in green plants.",
+                }
+            ],
+        )
+
+        self.assertGreaterEqual(len(cards), 8)
+        self.assertTrue(all(card.get("hint") for card in cards))
+        self.assertTrue(all(card.get("kind") for card in cards))
+        self.assertFalse(any(card["question"].lower().startswith("what is ") for card in cards))
+        self.assertIn("Photosynthesis", [card["question"] for card in cards])
+        self.assertFalse(
+            any(card["question"].strip().lower() == card["answer"].strip().lower() for card in cards)
+        )
+
+    def test_build_flashcards_generates_math_formula_headings(self) -> None:
+        cards = flashcard_service.build_flashcards(
+            concept_name="Heights and Distances",
+            definition=(
+                "Heights and distances uses trigonometric ratios to find inaccessible heights "
+                "and horizontal distances."
+            ),
+            intuition="Right triangles connect angles to measurable lengths.",
+            key_steps=[
+                "Identify the right triangle formed by the object and the line of sight.",
+                "Choose the tangent ratio to connect the given angle and the unknown height.",
+            ],
+            common_mistakes=["Confusing opposite side with adjacent side."],
+            recap=["The tangent ratio links angle measure with side lengths in a right triangle."],
+            formulas=["tan(theta) = opposite / adjacent"],
+        )
+
+        questions = [card["question"] for card in cards]
+        self.assertIn("Tangent Ratio", questions)
+        tangent_card = next(card for card in cards if card["question"] == "Tangent Ratio")
+        self.assertIn("tan(theta)", tangent_card["answer"])
 
 
 class EvidenceRetrievalServiceTests(unittest.TestCase):

@@ -263,6 +263,24 @@ class ConceptBookmarkResponse(BaseModel):
     created_at: datetime
 
 
+class FlashcardKind(str, Enum):
+    core = "core"
+    intuition = "intuition"
+    step = "step"
+    formula = "formula"
+    pitfall = "pitfall"
+    summary = "summary"
+    practice = "practice"
+    concept = "concept"
+
+
+class FlashcardItem(BaseModel):
+    question: str
+    answer: str
+    hint: str | None = None
+    kind: FlashcardKind = FlashcardKind.concept
+
+
 class ResourceItem(BaseModel):
     title: str
     url: str
