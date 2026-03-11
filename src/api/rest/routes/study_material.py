@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import FileResponse
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import concept_image_app_service, enrollment_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
+from src.core.services import concept_image_app_service, enrollment_app_service, flashcard_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
 from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
 from src.schemas.learning_bot import (
@@ -22,6 +22,7 @@ from src.schemas.study_material import (
     AdminMaterialRegenerateRequest,
     ConceptBulkCreate,
     ConceptBookmarkResponse,
+    FlashcardItem,
     ConceptMaterialResponse,
     ConceptResponse,
     ConceptResourcesResponse,
@@ -652,6 +653,28 @@ async def query_selected_concept_materials(
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     return await study_material_app_service.query_selected_concept_materials(
         subject_id, payload.concept_ids
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/flashcards",
+    response_model=list[FlashcardItem],
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_concept_flashcards(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[FlashcardItem]:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await flashcard_app_service.get_student_concept_flashcards(
+        subject_id=subject_id,
+        concept_id=concept_id,
     )
 
 

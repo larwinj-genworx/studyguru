@@ -4,6 +4,7 @@ from typing import Any
 
 from .base import BaseStructuredAgent
 from src.config.settings import Settings
+from src.core.services import flashcard_service
 from src.schemas.study_material import ConceptContentPack
 
 
@@ -65,11 +66,26 @@ class ArtifactSpecAgent(BaseStructuredAgent):
         if not isinstance(mcqs, list):
             mcqs = []
 
-        flashcards = data.get("flashcards")
-        if not isinstance(flashcards, list) or len(flashcards) < 8:
-            flashcards = content.get("flashcards", [])
-        if not isinstance(flashcards, list):
-            flashcards = []
+        source_flashcards = content.get("flashcards", [])
+        if not isinstance(source_flashcards, list):
+            source_flashcards = []
+        generated_flashcards = data.get("flashcards", [])
+        if not isinstance(generated_flashcards, list):
+            generated_flashcards = []
+        flashcards = flashcard_service.build_flashcards(
+            concept_name=concept_name,
+            definition=definition,
+            intuition=intuition,
+            key_steps=key_steps,
+            common_mistakes=common_mistakes,
+            recap=recap,
+            formulas=[str(item).strip() for item in formulas if str(item).strip()],
+            raw_flashcards=[
+                item
+                for item in [*source_flashcards, *generated_flashcards]
+                if isinstance(item, dict)
+            ],
+        )
         references = input_references
         if len(mcqs) < 6 or len(flashcards) < 8:
             raise ValueError("ArtifactSpecAgent produced insufficient practice coverage.")

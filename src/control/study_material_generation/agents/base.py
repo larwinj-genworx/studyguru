@@ -401,36 +401,52 @@ class BaseStructuredAgent:
     def _fallback_flashcards(concept_name: str) -> list[dict[str, str]]:
         return [
             {
-                "question": f"What is {concept_name}?",
+                "question": f"{concept_name} Core Idea",
+                "hint": "Recall the exact meaning of the topic before flipping.",
                 "answer": f"{concept_name} is a foundational topic explained with clear definitions and short examples.",
+                "kind": "core",
             },
             {
-                "question": f"Why is {concept_name} important?",
+                "question": "Why It Matters",
+                "hint": "Remember why the topic matters in later learning.",
                 "answer": "It helps students build a reliable base before moving to advanced applications.",
+                "kind": "summary",
             },
             {
-                "question": f"What is one common mistake in {concept_name}?",
+                "question": "Common Pitfall",
+                "hint": "Recall the mistake to avoid before solving.",
                 "answer": "Skipping intermediate steps and rushing to the final answer.",
+                "kind": "pitfall",
             },
             {
-                "question": f"How should students practice {concept_name}?",
+                "question": "Practice Pattern",
+                "hint": "Think about the right way to revise the concept.",
                 "answer": "Practice short sets regularly and verify each step.",
+                "kind": "practice",
             },
             {
-                "question": f"What should be checked after solving a {concept_name} problem?",
+                "question": "Verification Check",
+                "hint": "Recall what to verify after solving.",
                 "answer": "Check whether the method and final result are consistent.",
+                "kind": "practice",
             },
             {
-                "question": f"How can {concept_name} be revised quickly?",
+                "question": "Quick Revision",
+                "hint": "Bring back the fastest high-value review pattern.",
                 "answer": "Review definition, 3 key steps, and one solved example.",
+                "kind": "summary",
             },
             {
-                "question": f"What type of examples help in {concept_name} learning?",
+                "question": "Helpful Examples",
+                "hint": "Recall what kind of worked examples strengthen memory.",
                 "answer": "Examples that move from easy to medium difficulty.",
+                "kind": "concept",
             },
             {
-                "question": f"What improves confidence in {concept_name}?",
+                "question": "Confidence Builder",
+                "hint": "Think about what strengthens confidence over time.",
                 "answer": "Frequent recall practice with feedback.",
+                "kind": "summary",
             },
         ]
 
