@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,19 @@ class Settings(BaseSettings):
         default=Path("output/study_material"),
         alias="MATERIAL_OUTPUT_DIR",
     )
+    artifact_storage_backend: Literal["local", "gcs"] = Field(
+        default="gcs",
+        alias="ARTIFACT_STORAGE_BACKEND",
+    )
+    gcs_project_id: str = Field(default="gwx-internship-01", alias="GCS_PROJECT_ID")
+    gcs_bucket_name: str = Field(default="gwx-stg-intern-01", alias="GCS_BUCKET_NAME")
+    gcs_bucket_prefix: str = Field(default="studyguru", alias="GCS_BUCKET_PREFIX")
+    gcs_target_service_account: str = Field(
+        default="gwx-cloudrun-sa-01@gwx-internship-01.iam.gserviceaccount.com",
+        alias="GCS_TARGET_SERVICE_ACCOUNT",
+    )
+    gcs_request_timeout_seconds: int = Field(default=300, alias="GCS_REQUEST_TIMEOUT_SECONDS")
+    gcs_upload_workers: int = Field(default=8, alias="GCS_UPLOAD_WORKERS")
     max_parallel_concepts: int = Field(default=3, alias="MAX_PARALLEL_CONCEPTS")
     llm_max_concurrency: int = Field(default=1, alias="LLM_MAX_CONCURRENCY")
     agent_retry_attempts: int = Field(default=3, alias="AGENT_RETRY_ATTEMPTS")
@@ -83,6 +97,10 @@ class Settings(BaseSettings):
     def ensure_output_dir(self) -> None:
         self.material_output_dir.mkdir(parents=True, exist_ok=True)
         self.concept_visual_output_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def gcs_enabled(self) -> bool:
+        return self.artifact_storage_backend == "gcs"
 
     @property
     def database_url(self) -> str:

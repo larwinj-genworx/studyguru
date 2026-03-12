@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from src.config.settings import get_settings
 from src.core.services import concept_image_service, learning_content_service
 from src.core.services.concept_visual_microservice_client import ConceptVisualMicroserviceClient
+from src.core.services.object_storage_service import get_object_storage_service
 from src.data.models.postgres.models import ConceptImageAsset
 from src.data.repositories import concept_image_repository, study_material_repository
 from src.schemas.concept_visual_microservice import ConceptVisualRenderRequest
@@ -17,6 +18,7 @@ from src.schemas.study_material import LearningContent, MaterialLifecycleStatus
 
 _settings = get_settings()
 _client = ConceptVisualMicroserviceClient(_settings)
+_storage = get_object_storage_service()
 _logger = logging.getLogger(__name__)
 _LOCAL_MICROSERVICE_OUTPUT_DIR = Path(__file__).resolve().parents[4] / "ConceptVisualBackend" / "output" / "concept_visuals"
 
@@ -200,7 +202,7 @@ async def get_admin_concept_image_file_path(
     image_id: str,
     owner_id: str,
     variant: str = "full",
-) -> Path:
+) -> tuple[str, str | None, Path | None]:
     subject, concept, _material, _content = await _get_admin_material_context(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -213,9 +215,9 @@ async def get_admin_concept_image_file_path(
     )
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
     path = _resolve_existing_storage_path(relative_path)
-    if path is None:
+    if path is None and not _settings.gcs_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found.")
-    return path
+    return relative_path, asset.mime_type, path
 
 
 async def list_student_concept_images(
@@ -245,7 +247,7 @@ async def get_student_concept_image_file_path(
     concept_id: str,
     image_id: str,
     variant: str = "full",
-) -> Path:
+) -> tuple[str, str | None, Path | None]:
     subject, concept, material, _content = await _get_student_material_context(
         subject_id=subject_id,
         concept_id=concept_id,
@@ -257,9 +259,9 @@ async def get_student_concept_image_file_path(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approved image not found.")
     relative_path = asset.thumbnail_path if variant == "thumb" else asset.local_image_path
     path = _resolve_existing_storage_path(relative_path)
-    if path is None:
+    if path is None and not _settings.gcs_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found.")
-    return path
+    return relative_path, asset.mime_type, path
 
 
 async def _get_admin_material_context(
@@ -323,6 +325,7 @@ def _remove_paths(*relative_paths: str | None) -> None:
     for relative_path in relative_paths:
         if not relative_path:
             continue
+        _storage.delete_file(_storage.concept_visual_area, relative_path)
         for base_dir in _image_storage_roots():
             try:
                 target = concept_image_service.resolve_storage_path(

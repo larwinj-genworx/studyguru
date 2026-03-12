@@ -1,243 +1,103 @@
-import re
-import time
-import requests
-from bs4 import BeautifulSoup
+from __future__ import annotations
+
+import mimetypes
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Optional
-import sys
-import urllib.parse
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    )
-}
-TIMEOUT = 10
-MAX_CONTENT_CHARS = 3000
-MAX_WORKERS = 5
+from pathlib import Path
 
 
-@dataclass
-class ScrapedPage:
-    rank: int
-    url: str
-    title: str = ""
-    content: str = ""
-    error: Optional[str] = None
+PROJECT_ID = "gwx-internship-01"
+BUCKET_NAME = "gwx_stg_intern-01"
+BUCKET_PREFIX = "studyguru"
+SOURCE_DIR = Path(__file__).resolve().parent / "output"
+WORKERS = 8
+TARGET_SERVICE_ACCOUNT = "gwx-cloudrun-sa-01@gwx-internship-01.iam.gserviceaccount.com"
+SCOPES = ("https://www.googleapis.com/auth/devstorage.read_write",)
 
 
-# ──────────────────────────────────────────────
-# Step 1: Search — tries multiple methods
-# ──────────────────────────────────────────────
-def search_web(query: str, top_k: int = 5) -> list[str]:
-    """Try search methods in order until one works."""
-
-    # Method 1: duckduckgo-search library (most reliable)
-    urls = _ddgs_library_search(query, top_k)
-    if urls:
-        print(f"  [search] Found {len(urls)} URLs via duckduckgo-search library")
-        return urls
-
-    # Method 2: DuckDuckGo HTML POST (fallback)
-    urls = _ddg_html_search(query, top_k)
-    if urls:
-        print(f"  [search] Found {len(urls)} URLs via DuckDuckGo HTML")
-        return urls
-
-    # Method 3: Bing HTML scrape (last resort)
-    urls = _bing_search(query, top_k)
-    if urls:
-        print(f"  [search] Found {len(urls)} URLs via Bing")
-        return urls
-
-    print("  [error] All search methods failed.")
-    return []
-
-
-def _ddgs_library_search(query: str, top_k: int) -> list[str]:
-    """Uses the `duckduckgo-search` pip package (DDGS)."""
+def create_storage_client(project: str):
     try:
-        from duckduckgo_search import DDGS
-        results = DDGS().text(query, max_results=top_k)
-        return [r["href"] for r in results if "href" in r]
-    except ImportError:
-        print("  [info] duckduckgo-search not installed. Run: uv add duckduckgo-search")
-        return []
-    except Exception as e:
-        print(f"  [warn] DDGS library error: {e}")
-        return []
+        import google.auth
+        from google.auth import impersonated_credentials
+        from google.cloud import storage
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing dependency 'google-cloud-storage'. "
+            "Install it with 'uv add google-cloud-storage' or 'pip install google-cloud-storage'."
+        ) from exc
 
-
-def _ddg_html_search(query: str, top_k: int) -> list[str]:
-    """Scrapes DuckDuckGo HTML page — tries multiple selectors."""
-    try:
-        url = "https://html.duckduckgo.com/html/"
-        resp = requests.post(url, data={"q": query}, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "lxml")
-        links = []
-
-        # Try multiple selectors — DDG changes their HTML periodically
-        selectors = [
-            "a.result__a",           # old selector
-            "h2.result__title a",    # variant
-            "a[href*='uddg=']",      # redirect links
-            ".results a[href^='http']",  # generic
-        ]
-
-        for selector in selectors:
-            for a in soup.select(selector):
-                href = a.get("href", "")
-                # Decode DDG redirect wrapper
-                if "uddg=" in href:
-                    match = re.search(r"uddg=(https?[^&]+)", href)
-                    if match:
-                        href = urllib.parse.unquote(match.group(1))
-                if href.startswith("http") and "duckduckgo.com" not in href:
-                    if href not in links:
-                        links.append(href)
-                if len(links) >= top_k:
-                    break
-            if links:
-                break
-
-        return links
-
-    except Exception as e:
-        print(f"  [warn] DDG HTML error: {e}")
-        return []
-
-
-def _bing_search(query: str, top_k: int) -> list[str]:
-    """Scrapes Bing search results as last resort."""
-    try:
-        url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}&count={top_k}"
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "lxml")
-        links = []
-
-        for a in soup.select("li.b_algo h2 a"):
-            href = a.get("href", "")
-            if href.startswith("http") and "bing.com" not in href:
-                links.append(href)
-            if len(links) >= top_k:
-                break
-
-        return links
-
-    except Exception as e:
-        print(f"  [warn] Bing search error: {e}")
-        return []
-
-
-# ──────────────────────────────────────────────
-# Step 2: Scrape a single URL
-# ──────────────────────────────────────────────
-def scrape_page(rank: int, url: str) -> ScrapedPage:
-    page = ScrapedPage(rank=rank, url=url)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "lxml")
-
-        # Remove noise tags
-        for tag in soup(["script", "style", "nav", "footer", "header",
-                          "aside", "form", "noscript", "iframe", "ads"]):
-            tag.decompose()
-
-        # Title
-        page.title = soup.title.get_text(strip=True) if soup.title else url
-
-        # Main content: prefer <article> or <main>, else <body>
-        container = soup.find("article") or soup.find("main") or soup.body
-        raw = (
-            container.get_text(separator=" ", strip=True)
-            if container
-            else soup.get_text(separator=" ", strip=True)
+    source_credentials, detected_project = google.auth.default(scopes=SCOPES)
+    active_project = project or detected_project
+    if not active_project:
+        raise RuntimeError(
+            "Unable to determine the Google Cloud project. "
+            "Set PROJECT_ID explicitly in the script."
         )
+    if TARGET_SERVICE_ACCOUNT:
+        credentials = impersonated_credentials.Credentials(
+            source_credentials=source_credentials,
+            target_principal=TARGET_SERVICE_ACCOUNT,
+            target_scopes=list(SCOPES),
+            lifetime=3600,
+        )
+        return storage.Client(project=active_project, credentials=credentials)
+    return storage.Client(project=active_project, credentials=source_credentials)
 
-        # Clean whitespace
-        clean = re.sub(r"\s{2,}", " ", raw).strip()
-        page.content = clean[:MAX_CONTENT_CHARS]
 
-    except Exception as e:
-        page.error = str(e)
-
-    return page
+def build_object_name(root: Path, file_path: Path) -> str:
+    relative_path = file_path.relative_to(root).as_posix()
+    return "/".join(part for part in (BUCKET_PREFIX.strip("/"), relative_path) if part)
 
 
-# ──────────────────────────────────────────────
-# Step 3: Scrape all URLs in parallel
-# ──────────────────────────────────────────────
-def scrape_all(urls: list[str]) -> list[ScrapedPage]:
-    results: list[Optional[ScrapedPage]] = [None] * len(urls)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(scrape_page, i + 1, url): i
-            for i, url in enumerate(urls)
+def upload_file(bucket, root: Path, file_path: Path) -> str:
+    object_name = build_object_name(root, file_path)
+    blob = bucket.blob(object_name)
+    content_type, _ = mimetypes.guess_type(file_path.name)
+    blob.upload_from_filename(
+        filename=str(file_path),
+        content_type=content_type,
+        timeout=300,
+    )
+    return object_name
+
+
+def main() -> int:
+    root = SOURCE_DIR.resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Backend output folder not found: {root}")
+
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    if not files:
+        print(f"No files found under: {root}")
+        return 0
+
+    client = create_storage_client(PROJECT_ID)
+    bucket = client.bucket(BUCKET_NAME)
+
+    total_bytes = sum(path.stat().st_size for path in files)
+    print(f"Source folder : {root}")
+    print(f"Project       : {PROJECT_ID}")
+    print(f"Bucket        : {BUCKET_NAME}")
+    print(f"Prefix        : {BUCKET_PREFIX}")
+    print(f"Impersonation : {TARGET_SERVICE_ACCOUNT}")
+    print(f"Files         : {len(files)}")
+    print(f"Total bytes   : {total_bytes}")
+    print()
+
+    uploaded = 0
+    with ThreadPoolExecutor(max_workers=max(WORKERS, 1)) as executor:
+        future_map = {
+            executor.submit(upload_file, bucket, root, file_path): file_path
+            for file_path in files
         }
-        for future in as_completed(futures):
-            idx = futures[future]
-            results[idx] = future.result()
-    return results
+        for future in as_completed(future_map):
+            object_name = future.result()
+            uploaded += 1
+            print(f"UPLOADED {object_name}")
+
+    print()
+    print(f"Completed upload of {uploaded} files to gs://{BUCKET_NAME}/{BUCKET_PREFIX}/")
+    return 0
 
 
-# ──────────────────────────────────────────────
-# Step 4: Format output
-# ──────────────────────────────────────────────
-def format_results(question: str, pages: list[ScrapedPage]) -> str:
-    lines = [
-        "=" * 60,
-        f"Question : {question}",
-        f"Sources  : {len(pages)} pages scraped",
-        "=" * 60 + "\n",
-    ]
-    for page in pages:
-        lines.append(f"[{page.rank}] {page.title}")
-        lines.append(f"    URL: {page.url}")
-        if page.error:
-            lines.append(f"    ⚠ Error: {page.error}")
-        else:
-            lines.append(f"\n{page.content}\n")
-        lines.append("-" * 60)
-    return "\n".join(lines)
-
-
-# ──────────────────────────────────────────────
-# Main entry point
-# ──────────────────────────────────────────────
-def answer_question(question: str, top_k: int = 5) -> str:
-    print(f"\nSearching: '{question}' (top {top_k} results)...")
-    urls = search_web(question, top_k)
-
-    if not urls:
-        return "No URLs found. Check your internet connection or query."
-
-    print(f"Found {len(urls)} URLs. Scraping in parallel...")
-    t0 = time.time()
-    pages = scrape_all(urls)
-    elapsed = time.time() - t0
-    print(f"Done in {elapsed:.1f}s\n")
-
-    return format_results(question, pages)
-
-
-# ──────────────────────────────────────────────
-# CLI usage
-# ──────────────────────────────────────────────
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        question = input("Enter your question: ").strip()
-    else:
-        question = " ".join(sys.argv[1:])
-
-    top_k = 5
-    result = answer_question(question, top_k=top_k)
-    print(result)
+    raise SystemExit(main())

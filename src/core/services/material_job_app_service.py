@@ -13,6 +13,7 @@ from src.control.study_material_generation.renderers.json_renderer import JsonRe
 from src.control.study_material_generation.renderers.pdf_renderer import PdfRenderer
 from src.control.study_material_generation.renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 from src.core.services import material_job_service
+from src.core.services.object_storage_service import get_object_storage_service
 from src.core.services.study_material_app_service import _safe_remove_job_outputs
 from src.data.repositories import material_job_repository, study_material_repository
 from src.schemas.study_material import (
@@ -28,6 +29,7 @@ from src.schemas.study_material import (
 logger = logging.getLogger("uvicorn.error")
 
 _settings = get_settings()
+_storage = get_object_storage_service()
 _workflow: MaterialWorkflow | None = None
 
 
@@ -258,6 +260,10 @@ async def discard_job_concept(
             settings.material_output_dir / job.output_dir / "concepts",
             [concept_id],
         )
+        _storage.delete_prefix(
+            _storage.material_area,
+            f"{job.output_dir}/concepts/{concept_id}",
+        )
     concept = await material_job_repository.get_concept(concept_id)
     if concept:
         latest_after_delete = await study_material_repository.get_latest_material(concept_id)
@@ -278,14 +284,14 @@ async def get_job_artifact_path(job_id: str, artifact_name: str, owner_id: str):
     job = await _assert_job_owner(job_id, owner_id)
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_job_artifact_path(record, artifact_name)
+    return material_job_service.resolve_job_artifact_relative_path(record, artifact_name)
 
 
 async def get_job_concept_artifact_path(job_id: str, concept_id: str, artifact_name: str, owner_id: str):
     job = await _assert_job_owner(job_id, owner_id)
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_concept_artifact_path(record, concept_id, artifact_name)
+    return material_job_service.resolve_concept_artifact_relative_path(record, concept_id, artifact_name)
 
 
 async def get_published_concept_artifact_path(subject_id: str, concept_id: str, artifact_name: str):
@@ -300,7 +306,11 @@ async def get_published_concept_artifact_path(subject_id: str, concept_id: str, 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_published_concept_artifact_path(record, concept_id, artifact_name)
+    return material_job_service.resolve_published_concept_artifact_relative_path(
+        record,
+        concept_id,
+        artifact_name,
+    )
 
 
 async def get_published_subject_artifact_path(subject_id: str, artifact_name: str):
@@ -330,7 +340,7 @@ async def get_published_subject_artifact_path(subject_id: str, artifact_name: st
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_published_subject_artifact_path(record, artifact_name)
+    return material_job_service.resolve_published_subject_artifact_relative_path(record, artifact_name)
 
 
 async def _run_job(job_id: str) -> None:

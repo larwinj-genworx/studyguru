@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
+import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 import logging
 import shutil
@@ -11,6 +12,7 @@ from fastapi import HTTPException, status
 
 from src.config.settings import get_settings
 from src.core.services import study_material_service, learning_content_service
+from src.core.services.object_storage_service import get_object_storage_service
 from src.data.repositories import study_material_repository, material_job_repository
 from src.schemas.study_material import (
     AdminConceptPlanUpdateRequest,
@@ -28,6 +30,7 @@ from src.schemas.study_material import (
 )
 
 _logger = logging.getLogger("uvicorn.error")
+_storage = get_object_storage_service()
 
 
 _BUNDLE_ARTIFACT_FIELDS = (
@@ -342,9 +345,12 @@ async def get_approved_subject_bundle_path(subject_id: str, owner_id: str) -> Pa
         )
     concept_name_map = {concept.id: concept.name for concept in concepts}
     settings = get_settings()
-    bundle_dir = settings.material_output_dir / "approved_bundles" / subject_id
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    bundle_path = bundle_dir / "approved_materials.zip"
+    with tempfile.NamedTemporaryFile(
+        prefix=f"approved-materials-{subject_id}-",
+        suffix=".zip",
+        delete=False,
+    ) as handle:
+        bundle_path = Path(handle.name)
     added = 0
     with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
         for concept_id, material in approved_materials.items():
@@ -361,18 +367,22 @@ async def get_approved_subject_bundle_path(subject_id: str, owner_id: str) -> Pa
                 filename = getattr(artifact_index, field, None)
                 if not filename:
                     continue
-                file_path = (
-                    settings.material_output_dir
-                    / job.output_dir
-                    / "concepts"
-                    / concept_id
-                    / filename
+                relative_path = (
+                    f"{job.output_dir}/concepts/{concept_id}/{filename}"
                 )
-                if not file_path.exists():
+                file_path = settings.material_output_dir / relative_path
+                try:
+                    file_path = _storage.ensure_local_copy(
+                        _storage.material_area,
+                        relative_path,
+                        local_path=file_path,
+                    )
+                except FileNotFoundError:
                     continue
                 zf.write(file_path, arcname=f"{folder}/{filename}")
                 added += 1
     if not added:
+        bundle_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Approved material files are missing.",
@@ -517,6 +527,8 @@ async def delete_subject(subject_id: str, owner_id: str, force: bool = False) ->
     await study_material_repository.delete_subject_data(subject_id)
     settings = get_settings()
     _safe_remove_job_outputs(settings.material_output_dir, output_dirs)
+    for output_dir in output_dirs:
+        _storage.delete_prefix(_storage.material_area, output_dir)
 
 
 async def get_admin_concept_learning_content(

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from src.api.rest.dependencies import get_current_user, require_role
 from src.core.services import concept_image_app_service, enrollment_app_service, flashcard_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
+from src.core.services.object_storage_service import get_object_storage_service
 from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
 from src.schemas.learning_bot import (
     LearningBotMessageCreate,
@@ -39,6 +41,7 @@ from src.schemas.study_material import (
 )
 
 router = APIRouter(tags=["study-material"])
+_storage = get_object_storage_service()
 
 
 # ----- Admin APIs -----
@@ -191,6 +194,7 @@ async def download_approved_materials_bundle(
         path=str(bundle_path),
         filename=bundle_path.name,
         media_type="application/zip",
+        background=BackgroundTask(bundle_path.unlink, missing_ok=True),
     )
 
 
@@ -282,13 +286,17 @@ async def discard_material_job_concept(
 async def download_admin_job_zip(
     job_id: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    zip_path = await material_job_app_service.get_job_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_artifact_path(
         job_id=job_id,
         artifact_name="zip",
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(zip_path), filename=zip_path.name, media_type="application/zip")
+    return _storage.build_download_response(
+        _storage.material_area,
+        relative_path,
+        media_type="application/zip",
+    )
 
 
 @router.get(
@@ -299,13 +307,13 @@ async def download_admin_job_artifact(
     job_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    artifact_path = await material_job_app_service.get_job_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_artifact_path(
         job_id=job_id,
         artifact_name=artifact_name,
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.get(
@@ -317,14 +325,14 @@ async def download_admin_concept_artifact(
     concept_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    artifact_path = await material_job_app_service.get_job_concept_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_concept_artifact_path(
         job_id=job_id,
         concept_id=concept_id,
         artifact_name=artifact_name,
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.post(
@@ -544,15 +552,21 @@ async def download_admin_concept_image_file(
     image_id: str,
     variant: str = Query(default="full"),
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    path = await concept_image_app_service.get_admin_concept_image_file_path(
+) -> Response:
+    relative_path, mime_type, local_path = await concept_image_app_service.get_admin_concept_image_file_path(
         subject_id=subject_id,
         concept_id=concept_id,
         image_id=image_id,
         owner_id=current_user["id"],
         variant=variant,
     )
-    return FileResponse(path=str(path), filename=path.name)
+    return _storage.build_download_response(
+        _storage.concept_visual_area,
+        relative_path,
+        media_type=mime_type,
+        local_path=local_path,
+        inline=True,
+    )
 
 
 # ----- Student APIs -----
@@ -687,19 +701,19 @@ async def download_student_concept_artifact(
     concept_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
+) -> Response:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     await progression_app_service.ensure_student_can_access_concept(
         subject_id=subject_id,
         concept_id=concept_id,
         user_id=current_user["id"],
     )
-    artifact_path = await material_job_app_service.get_published_concept_artifact_path(
+    relative_path = await material_job_app_service.get_published_concept_artifact_path(
         subject_id=subject_id,
         concept_id=concept_id,
         artifact_name=artifact_name,
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.get(
@@ -827,20 +841,26 @@ async def download_student_concept_image_file(
     image_id: str,
     variant: str = Query(default="full"),
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
+) -> Response:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     await progression_app_service.ensure_student_can_access_concept(
         subject_id=subject_id,
         concept_id=concept_id,
         user_id=current_user["id"],
     )
-    path = await concept_image_app_service.get_student_concept_image_file_path(
+    relative_path, mime_type, local_path = await concept_image_app_service.get_student_concept_image_file_path(
         subject_id=subject_id,
         concept_id=concept_id,
         image_id=image_id,
         variant=variant,
     )
-    return FileResponse(path=str(path), filename=path.name)
+    return _storage.build_download_response(
+        _storage.concept_visual_area,
+        relative_path,
+        media_type=mime_type,
+        local_path=local_path,
+        inline=True,
+    )
 
 
 @router.get(
@@ -911,10 +931,10 @@ async def download_student_subject_artifact(
     subject_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
+) -> Response:
     await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
-    artifact_path = await material_job_app_service.get_published_subject_artifact_path(
+    relative_path = await material_job_app_service.get_published_subject_artifact_path(
         subject_id=subject_id,
         artifact_name=artifact_name,
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)

@@ -12,6 +12,7 @@ dependencies = [
     "duckduckgo-search>=8.1.1",
     "email-validator>=2.2.0",
     "fastapi>=0.131.0",
+    "google-cloud-storage>=2.19.0",
     "httpx>=0.28.1",
     "langchain-groq>=0.3.8",
     "langgraph>=0.6.7",

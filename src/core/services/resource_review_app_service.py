@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -9,9 +10,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi import HTTPException, status
 
 from src.core.services import material_job_service
+from src.core.services.object_storage_service import get_object_storage_service
 from src.core.services.resource_video_service import YouTubeVideoService
 from src.data.repositories import material_job_repository, study_material_repository
 from src.schemas.study_material import ConceptResourcesResponse, ResourceItem, VideoFeedbackRequest
+
+_storage = get_object_storage_service()
 
 
 def _is_youtube_url(url: str) -> bool:
@@ -118,21 +122,22 @@ def _write_resources(
     tmp_path.replace(path)
 
 
-def _refresh_zip_bundle(target_dir: Path, zip_name: str = "study_material_bundle.zip") -> None:
+def _refresh_zip_bundle(target_dir: Path, zip_name: str = "study_material_bundle.zip") -> Path:
     if not target_dir.exists():
-        return
+        return target_dir / zip_name
     zip_path = target_dir / zip_name
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
         for file_path in target_dir.rglob("*"):
             if file_path.is_file() and file_path.name != zip_name:
                 zf.write(file_path, arcname=str(file_path.relative_to(target_dir)))
+    return zip_path
 
 
 async def _resolve_concept_resources_path(
     subject_id: str,
     concept_id: str,
     owner_id: str,
-) -> tuple[str, str, str, Path]:
+) -> tuple[str, str, str, Path, str]:
     subject = await study_material_repository.get_subject_for_owner(subject_id, owner_id)
     if not subject:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found.")
@@ -147,8 +152,23 @@ async def _resolve_concept_resources_path(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    path = material_job_service.resolve_concept_artifact_path(record, concept_id, "resources_json")
-    return subject.name, subject.grade_level, concept.name, path
+    relative_path = material_job_service.resolve_concept_artifact_relative_path(
+        record,
+        concept_id,
+        "resources_json",
+    )
+    if job.output_dir:
+        await asyncio.to_thread(
+            _storage.ensure_local_prefix,
+            _storage.material_area,
+            job.output_dir,
+        )
+    path = await asyncio.to_thread(
+        _storage.ensure_local_copy,
+        _storage.material_area,
+        relative_path,
+    )
+    return subject.name, subject.grade_level, concept.name, path, job.output_dir or ""
 
 
 async def get_admin_concept_resources(
@@ -162,7 +182,7 @@ async def get_admin_concept_resources(
     concept = await study_material_repository.get_concept(concept_id)
     if not concept or concept.subject_id != subject.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
-    _, _, _, path = await _resolve_concept_resources_path(subject_id, concept_id, owner_id)
+    _, _, _, path, _ = await _resolve_concept_resources_path(subject_id, concept_id, owner_id)
     resources, _, _ = _load_resources(path, concept_id)
     approved = await study_material_repository.list_video_feedback(concept_id, status="approved")
     approved_id = approved[0].video_id if approved else None
@@ -182,7 +202,7 @@ async def refresh_admin_concept_video(
     payload: VideoFeedbackRequest,
     owner_id: str,
 ) -> ConceptResourcesResponse:
-    subject_name, grade_level, concept_name, path = await _resolve_concept_resources_path(
+    subject_name, grade_level, concept_name, path, _ = await _resolve_concept_resources_path(
         subject_id, concept_id, owner_id
     )
     resources, existing_payload, payload_is_list = _load_resources(path, concept_id)
@@ -248,8 +268,27 @@ async def refresh_admin_concept_video(
             existing_payload=subject_payload,
             payload_is_list=True,
         )
-    _refresh_zip_bundle(concept_dir)
-    _refresh_zip_bundle(output_dir)
+    concept_zip_path = _refresh_zip_bundle(concept_dir)
+    output_zip_path = _refresh_zip_bundle(output_dir)
+    await asyncio.to_thread(_storage.sync_local_file, _storage.material_area, path)
+    if subject_resources_path.exists():
+        await asyncio.to_thread(
+            _storage.sync_local_file,
+            _storage.material_area,
+            subject_resources_path,
+        )
+    if concept_zip_path.exists():
+        await asyncio.to_thread(
+            _storage.sync_local_file,
+            _storage.material_area,
+            concept_zip_path,
+        )
+    if output_zip_path.exists():
+        await asyncio.to_thread(
+            _storage.sync_local_file,
+            _storage.material_area,
+            output_zip_path,
+        )
     approved_rows = await study_material_repository.list_video_feedback(concept_id, status="approved")
     approved_id = approved_rows[0].video_id if approved_rows else None
     return ConceptResourcesResponse(
@@ -268,7 +307,7 @@ async def approve_admin_concept_video(
     payload: VideoFeedbackRequest,
     owner_id: str,
 ) -> ConceptResourcesResponse:
-    subject_name, _, concept_name, path = await _resolve_concept_resources_path(
+    subject_name, _, concept_name, path, _ = await _resolve_concept_resources_path(
         subject_id, concept_id, owner_id
     )
     resources, _, _ = _load_resources(path, concept_id)
