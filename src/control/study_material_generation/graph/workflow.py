@@ -15,12 +15,14 @@ from src.schemas.quiz import QuizQuestionSourceType
 from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobStatus, MaterialLifecycleStatus
 from src.data.models.postgres.models import ConceptMaterial, QuizQuestion
 from src.core.services import learning_content_service, quiz_service
+from src.core.services.object_storage_service import get_object_storage_service
 from src.data.repositories import workflow_repository, study_material_repository, quiz_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
 from ..renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 
 logger = logging.getLogger("uvicorn.error")
+_storage = get_object_storage_service()
 
 
 def _build_topic_assessment_questions(
@@ -753,6 +755,15 @@ class MaterialWorkflow:
             for concept_id, artifact_map in concept_artifacts.items()
         }
 
+        output_dir = state.get("output_dir")
+        if output_dir:
+            await asyncio.to_thread(
+                _storage.upload_local_directory,
+                _storage.material_area,
+                Path(output_dir),
+                local_root=self.settings.material_output_dir,
+            )
+
         concept_ids = list(concept_states.keys())
         concept_pack_map: dict[str, ConceptContentPack] = {}
         for pack in state.get("concept_packs", []):
@@ -859,7 +870,6 @@ class MaterialWorkflow:
                 questions=questions,
             )
 
-        output_dir = state.get("output_dir")
         job.output_dir = Path(output_dir).name if output_dir else None
         job.progress = 98
         for concept_id in concept_states.keys():

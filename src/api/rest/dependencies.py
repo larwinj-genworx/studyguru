@@ -1,15 +1,26 @@
 from __future__ import annotations
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
+from src.config.settings import get_settings
 from src.core.services.auth_service import decode_access_token
 from src.data.repositories import auth_repository
 
 
-async def get_current_user(authorization: str | None = Header(default=None)) -> dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing access token.")
-    token = authorization.split(" ", 1)[1].strip()
+def _resolve_access_token(request: Request, authorization: str | None) -> str:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+
+    settings = get_settings()
+    token = request.cookies.get(settings.auth_cookie_name)
+    if token:
+        return token
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing access token.")
+
+
+async def get_current_user(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    token = _resolve_access_token(request, authorization)
     try:
         payload = decode_access_token(token)
     except ValueError as exc:
@@ -25,8 +36,8 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
 
 
 def require_role(expected_role: str):
-    async def _require_role(authorization: str | None = Header(default=None)) -> None:
-        current_user = await get_current_user(authorization)
+    async def _require_role(request: Request, authorization: str | None = Header(default=None)) -> None:
+        current_user = await get_current_user(request, authorization)
         if current_user["role"].lower() != expected_role.lower():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -1,26 +1,26 @@
-﻿# syntax=docker/dockerfile:1
-FROM python:3.11-slim AS base
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim
 
-# 1. Install uv by copying it from the official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.10.8 /uv /uvx /bin/
 
-# 2. Add uv-specific environment variables for better performance
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
-# Use --system if you want to install directly into the image instead of a venv.
 COPY requirements.txt ./
-RUN uv pip install --system -r requirements.txt
+RUN uv venv "$VIRTUAL_ENV" \
+    && uv pip install --python "$VIRTUAL_ENV/bin/python" -r requirements.txt
 
+COPY .env ./.env
 COPY src ./src
 COPY Temp ./Temp
 
-ENV PYTHONPATH=/app
 EXPOSE 8000
 
-# 4. Use 'uv run' to execute your application
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uv run --active uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

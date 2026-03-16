@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import HTTPException, status
 
-from src.config.settings import get_settings
-from src.core.services.study_material_service import artifact_index_from_json, artifact_index_to_json
+from src.core.services.study_material_service import artifact_index_from_json
 from src.data.models.postgres.models import Concept, ConceptMaterial, MaterialJob, MaterialJobConcept
 from src.schemas.study_material import (
-    AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
     ArtifactIndex,
     JobRecord,
@@ -165,19 +162,22 @@ def assert_completed(job: JobRecord) -> None:
         )
 
 
-def resolve_job_artifact_path(job: JobRecord, artifact_name: str) -> Path:
+def _job_relative_root(job: JobRecord) -> str:
+    if not job.output_dir:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact directory not found.")
+    return job.output_dir
+
+
+def resolve_job_artifact_relative_path(job: JobRecord, artifact_name: str) -> str:
     validate_artifact_name(artifact_name)
     assert_completed(job)
     path_value = getattr(job.artifact_index, artifact_name, None)
     if not path_value:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found.")
-    if not job.output_dir:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact directory not found.")
-    settings = get_settings()
-    return settings.material_output_dir / job.output_dir / path_value
+    return f"{_job_relative_root(job)}/{path_value}"
 
 
-def resolve_concept_artifact_path(job: JobRecord, concept_id: str, artifact_name: str) -> Path:
+def resolve_concept_artifact_relative_path(job: JobRecord, concept_id: str, artifact_name: str) -> str:
     validate_artifact_name(artifact_name)
     assert_completed(job)
     concept_artifact = job.concept_artifacts.get(concept_id)
@@ -189,29 +189,20 @@ def resolve_concept_artifact_path(job: JobRecord, concept_id: str, artifact_name
     path_value = getattr(concept_artifact, artifact_name, None)
     if not path_value:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found.")
-    if not job.output_dir:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact directory not found.")
-    settings = get_settings()
-    return settings.material_output_dir / job.output_dir / "concepts" / concept_id / path_value
+    return f"{_job_relative_root(job)}/concepts/{concept_id}/{path_value}"
 
 
-def resolve_published_concept_artifact_path(job: JobRecord, concept_id: str, artifact_name: str) -> Path:
+def resolve_published_concept_artifact_relative_path(job: JobRecord, concept_id: str, artifact_name: str) -> str:
     validate_artifact_name(artifact_name)
     path_value = getattr(job.concept_artifacts.get(concept_id) or ArtifactIndex(), artifact_name, None)
     if not path_value:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Published artifact not found.")
-    if not job.output_dir:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact directory not found.")
-    settings = get_settings()
-    return settings.material_output_dir / job.output_dir / "concepts" / concept_id / path_value
+    return f"{_job_relative_root(job)}/concepts/{concept_id}/{path_value}"
 
 
-def resolve_published_subject_artifact_path(job: JobRecord, artifact_name: str) -> Path:
+def resolve_published_subject_artifact_relative_path(job: JobRecord, artifact_name: str) -> str:
     validate_artifact_name(artifact_name)
     path_value = getattr(job.artifact_index, artifact_name, None)
     if not path_value:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found.")
-    if not job.output_dir:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact directory not found.")
-    settings = get_settings()
-    return settings.material_output_dir / job.output_dir / path_value
+    return f"{_job_relative_root(job)}/{path_value}"
