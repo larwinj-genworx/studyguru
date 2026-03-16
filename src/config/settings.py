@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote, urlencode
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,11 +29,11 @@ class Settings(BaseSettings):
         default="gcs",
         alias="ARTIFACT_STORAGE_BACKEND",
     )
-    gcs_project_id: str = Field(default="gwx-internship-01", alias="GCS_PROJECT_ID")
-    gcs_bucket_name: str = Field(default="gwx-stg-intern-01", alias="GCS_BUCKET_NAME")
-    gcs_bucket_prefix: str = Field(default="studyguru", alias="GCS_BUCKET_PREFIX")
+    gcs_project_id: str = Field(default="", alias="GCS_PROJECT_ID")
+    gcs_bucket_name: str = Field(default="", alias="GCS_BUCKET_NAME")
+    gcs_bucket_prefix: str = Field(default="", alias="GCS_BUCKET_PREFIX")
     gcs_target_service_account: str = Field(
-        default="gwx-cloudrun-sa-01@gwx-internship-01.iam.gserviceaccount.com",
+        default="",
         alias="GCS_TARGET_SERVICE_ACCOUNT",
     )
     gcs_request_timeout_seconds: int = Field(default=300, alias="GCS_REQUEST_TIMEOUT_SECONDS")
@@ -89,10 +90,26 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="postgres", alias="POSTGRES_PASSWORD")
     postgres_host: str = Field(default="localhost", alias="POSTGRES_HOST")
     postgres_port: int = Field(default=5432, alias="POSTGRES_PORT")
+    postgres_instance_connection_name: str = Field(
+        default="",
+        alias="POSTGRES_INSTANCE_CONNECTION_NAME",
+    )
+    postgres_socket_dir: str = Field(default="/cloudsql", alias="POSTGRES_SOCKET_DIR")
 
     jwt_secret: str = Field(min_length=16, alias="JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_exp_minutes: int = Field(default=60, alias="JWT_EXP_MINUTES")
+    auth_cookie_name: str = Field(default="studyguru_access_token", alias="AUTH_COOKIE_NAME")
+    auth_cookie_domain: str = Field(default="", alias="AUTH_COOKIE_DOMAIN")
+    auth_cookie_secure: bool = Field(default=False, alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        alias="AUTH_COOKIE_SAMESITE",
+    )
+    cors_allow_origins_raw: str = Field(
+        default="",
+        alias="CORS_ALLOW_ORIGINS",
+    )
 
     def ensure_output_dir(self) -> None:
         self.material_output_dir.mkdir(parents=True, exist_ok=True)
@@ -103,13 +120,39 @@ class Settings(BaseSettings):
         return self.artifact_storage_backend == "gcs"
 
     @property
+    def cors_allow_origins(self) -> list[str]:
+        return [
+            origin.rstrip("/")
+            for origin in (item.strip() for item in self.cors_allow_origins_raw.split(","))
+            if origin
+        ]
+
+    @property
     def database_url(self) -> str:
+        cloudsql_socket_host = self.cloudsql_socket_host
+        if cloudsql_socket_host:
+            return self._build_cloudsql_socket_database_url(cloudsql_socket_host)
         if self.postgres_url:
             return self.postgres_url
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def cloudsql_socket_host(self) -> str:
+        if self.postgres_instance_connection_name:
+            return f"{self.postgres_socket_dir.rstrip('/')}/{self.postgres_instance_connection_name}"
+        if self.postgres_host.startswith("/cloudsql/"):
+            return self.postgres_host
+        return ""
+
+    def _build_cloudsql_socket_database_url(self, socket_host: str) -> str:
+        username = quote(self.postgres_user, safe="")
+        password = quote(self.postgres_password, safe="")
+        database = quote(self.postgres_db, safe="")
+        query = urlencode({"host": socket_host})
+        return f"postgresql+asyncpg://{username}:{password}@/{database}?{query}"
 
 
 @lru_cache(maxsize=1)
