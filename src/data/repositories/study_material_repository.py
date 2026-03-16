@@ -58,11 +58,59 @@ async def list_subjects_for_owner(owner_id: str) -> list[Subject]:
         return result.scalars().all()
 
 
+async def list_subjects_for_organization(
+    organization_id: str,
+    *,
+    published_only: bool = False,
+) -> list[Subject]:
+    async with AsyncSessionFactory() as session:
+        stmt = select(Subject).where(Subject.organization_id == organization_id)
+        if published_only:
+            stmt = stmt.where(Subject.published.is_(True))
+        stmt = stmt.order_by(desc(Subject.created_at))
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+
+async def list_subjects_for_student(
+    student_id: str,
+    organization_id: str,
+    *,
+    published_only: bool = False,
+) -> list[tuple[Subject, SubjectEnrollment]]:
+    async with AsyncSessionFactory() as session:
+        stmt = (
+            select(Subject, SubjectEnrollment)
+            .join(SubjectEnrollment, SubjectEnrollment.subject_id == Subject.id)
+            .where(
+                SubjectEnrollment.student_id == student_id,
+                Subject.organization_id == organization_id,
+            )
+            .order_by(desc(SubjectEnrollment.enrolled_at), desc(Subject.created_at))
+        )
+        if published_only:
+            stmt = stmt.where(Subject.published.is_(True))
+        result = await session.execute(stmt)
+        return [(row[0], row[1]) for row in result.all()]
+
+
 async def list_enrollments_for_student(student_id: str) -> list[SubjectEnrollment]:
     async with AsyncSessionFactory() as session:
         result = await session.execute(
             select(SubjectEnrollment)
             .where(SubjectEnrollment.student_id == student_id)
+            .order_by(desc(SubjectEnrollment.enrolled_at))
+        )
+        return result.scalars().all()
+
+
+async def list_enrollments_for_students(student_ids: list[str]) -> list[SubjectEnrollment]:
+    if not student_ids:
+        return []
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(SubjectEnrollment)
+            .where(SubjectEnrollment.student_id.in_(student_ids))
             .order_by(desc(SubjectEnrollment.enrolled_at))
         )
         return result.scalars().all()
@@ -98,6 +146,69 @@ async def create_subject_enrollment(student_id: str, subject_id: str) -> Subject
             enrollment = SubjectEnrollment(student_id=student_id, subject_id=subject_id)
             session.add(enrollment)
         return enrollment
+
+
+async def replace_subject_enrollments(
+    *,
+    student_id: str,
+    subject_ids: list[str],
+) -> list[SubjectEnrollment]:
+    target_ids = list(dict.fromkeys(subject_ids))
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            result = await session.execute(
+                select(SubjectEnrollment).where(SubjectEnrollment.student_id == student_id)
+            )
+            existing_rows = result.scalars().all()
+            existing_map = {row.subject_id: row for row in existing_rows}
+
+            for subject_id, row in existing_map.items():
+                if subject_id not in target_ids:
+                    await session.delete(row)
+
+            created_or_existing: list[SubjectEnrollment] = []
+            for subject_id in target_ids:
+                row = existing_map.get(subject_id)
+                if row is None:
+                    row = SubjectEnrollment(student_id=student_id, subject_id=subject_id)
+                    session.add(row)
+                created_or_existing.append(row)
+
+        return created_or_existing
+
+
+async def ensure_subject_enrollments(
+    *,
+    student_ids: list[str],
+    subject_ids: list[str],
+) -> list[SubjectEnrollment]:
+    unique_student_ids = list(dict.fromkeys(student_ids))
+    unique_subject_ids = list(dict.fromkeys(subject_ids))
+    if not unique_student_ids or not unique_subject_ids:
+        return []
+
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            result = await session.execute(
+                select(SubjectEnrollment).where(
+                    SubjectEnrollment.student_id.in_(unique_student_ids),
+                    SubjectEnrollment.subject_id.in_(unique_subject_ids),
+                )
+            )
+            existing_rows = result.scalars().all()
+            existing_pairs = {(row.student_id, row.subject_id) for row in existing_rows}
+
+            created_rows: list[SubjectEnrollment] = []
+            for student_id in unique_student_ids:
+                for subject_id in unique_subject_ids:
+                    pair = (student_id, subject_id)
+                    if pair in existing_pairs:
+                        continue
+                    row = SubjectEnrollment(student_id=student_id, subject_id=subject_id)
+                    session.add(row)
+                    created_rows.append(row)
+
+        return [*existing_rows, *created_rows]
 
 
 async def list_concepts(subject_id: str) -> list[Concept]:

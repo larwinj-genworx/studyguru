@@ -31,7 +31,6 @@ from src.schemas.study_material import (
     StudentSubjectProgressResponse,
     StudentTopicProgressResponse,
     StudentTopicProgressState,
-    SubjectEnrollmentResponse,
     SubjectResponse,
 )
 
@@ -41,51 +40,74 @@ _TRACKABLE_STATUSES = {
 }
 
 
+async def sync_organization_subject_access(
+    organization_id: str,
+    *,
+    student_ids: list[str] | None = None,
+    subject_ids: list[str] | None = None,
+) -> None:
+    target_student_ids = student_ids or [
+        user.id
+        for user in await auth_repository.list_users_for_organization(organization_id, role="student")
+    ]
+    target_subject_ids = subject_ids or [
+        subject.id
+        for subject in await study_material_repository.list_subjects_for_organization(organization_id)
+    ]
+    if not target_student_ids or not target_subject_ids:
+        return
+    await study_material_repository.ensure_subject_enrollments(
+        student_ids=target_student_ids,
+        subject_ids=target_subject_ids,
+    )
+
+
 async def list_student_subjects(user_id: str) -> list[SubjectResponse]:
-    subjects = await study_material_repository.list_subjects(published_only=True)
+    user = await auth_repository.get_user_by_id(user_id)
+    if not user or user.role.lower() != "student":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+
+    subjects = await study_material_repository.list_subjects_for_organization(user.organization_id)
     enrollments = await study_material_repository.list_enrollments_for_student(user_id)
     enrollment_map = {item.subject_id: item for item in enrollments}
 
-    responses: list[SubjectResponse] = []
-    for subject in subjects:
-        concepts = await study_material_repository.list_concepts(subject.id)
-        responses.append(
-            study_material_service.to_subject_response(
-                subject,
-                concepts,
-                enrollment=enrollment_map.get(subject.id),
-            )
+    return [
+        study_material_service.to_subject_response(
+            subject,
+            [],
+            enrollment=enrollment_map.get(subject.id),
         )
-    return responses
-
-
-async def enroll_student(subject_id: str, user_id: str) -> SubjectEnrollmentResponse:
-    subject = await study_material_repository.get_subject(subject_id)
-    if not subject or not subject.published:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subject is not available for enrollment.",
-        )
-    enrollment = await study_material_repository.create_subject_enrollment(user_id, subject_id)
-    return study_material_service.to_subject_enrollment_response(enrollment)
+        for subject in subjects
+    ]
 
 
 async def ensure_student_enrollment(
     subject_id: str,
     user_id: str,
 ) -> tuple[Subject, SubjectEnrollment]:
+    user = await auth_repository.get_user_by_id(user_id)
+    if not user or user.role.lower() != "student":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+
     subject = await study_material_repository.get_subject(subject_id)
     if not subject or not subject.published:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subject is not available for students.",
         )
-    enrollment = await study_material_repository.get_subject_enrollment(user_id, subject_id)
-    if not enrollment:
+    if subject.organization_id != user.organization_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Enroll in this syllabus to access course materials.",
+            detail="This subject is not available for your organization.",
         )
+    enrollment = await study_material_repository.get_subject_enrollment(user_id, subject_id)
+    if not enrollment:
+        enrollment = await study_material_repository.create_subject_enrollment(user_id, subject_id)
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This syllabus is not available for your account.",
+            )
     return subject, enrollment
 
 
@@ -165,7 +187,7 @@ async def get_admin_student_activity(
     if not enrollment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student is not enrolled in this syllabus.",
+            detail="Student is not assigned to this syllabus.",
         )
 
     concepts = await study_material_repository.list_concepts(subject.id)
@@ -529,7 +551,7 @@ def _build_recent_activity(
     events: list[StudentActivityEventResponse] = [
         StudentActivityEventResponse(
             event_type="enrollment",
-            title="Enrolled in syllabus",
+            title="Assigned to syllabus",
             occurred_at=enrollment.enrolled_at,
         )
     ]

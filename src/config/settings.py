@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         alias="MATERIAL_OUTPUT_DIR",
     )
     artifact_storage_backend: Literal["local", "gcs"] = Field(
-        default="gcs",
+        default="local",
         alias="ARTIFACT_STORAGE_BACKEND",
     )
     gcs_project_id: str = Field(default="", alias="GCS_PROJECT_ID")

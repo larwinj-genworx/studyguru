@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
@@ -10,16 +11,44 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=6, max_length=128)
 
 
-class SignupRequest(BaseModel):
+class PlatformAdminProvisionRequest(BaseModel):
+    organization_name: str = Field(min_length=2, max_length=120)
+    admin_email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class ManagedStudentSubjectResponse(BaseModel):
+    subject_id: str
+    name: str
+    published: bool
+
+
+class AdminManagedStudentCreateRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
-    role: Literal["admin", "student"]
+
+
+class AdminManagedStudentUpdateRequest(BaseModel):
+    password: str | None = Field(default=None, min_length=6, max_length=128)
+    is_active: bool | None = None
 
 
 class UserResponse(BaseModel):
     user_id: str
     email: EmailStr
     role: str
+    organization_id: str
+
+
+class AdminManagedStudentResponse(BaseModel):
+    user_id: str
+    email: EmailStr
+    role: Literal["student"] = "student"
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: datetime | None = None
+    assigned_subjects: list[ManagedStudentSubjectResponse] = Field(default_factory=list)
 
 
 class TokenResponse(BaseModel):
