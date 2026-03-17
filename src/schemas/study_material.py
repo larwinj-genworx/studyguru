@@ -233,13 +233,14 @@ class ConceptContentPack(BaseModel):
     definition: str
     intuition: str
     formulas: list[str] = Field(default_factory=list)
-    key_steps: list[str]
-    common_mistakes: list[str]
-    examples: list[str]
-    mcqs: list[dict[str, Any]]
-    flashcards: list[dict[str, str]]
-    references: list[dict[str, str]]
-    recap: list[str]
+    stepwise_breakdown_required: bool = False
+    key_steps: list[str] = Field(default_factory=list)
+    common_mistakes: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    mcqs: list[dict[str, Any]] = Field(default_factory=list)
+    flashcards: list[dict[str, str]] = Field(default_factory=list)
+    references: list[dict[str, str]] = Field(default_factory=list)
+    recap: list[str] = Field(default_factory=list)
     practical_examples_required: bool = True
 
 

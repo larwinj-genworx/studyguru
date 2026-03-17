@@ -33,7 +33,8 @@ def build_learning_content(
     core = concept_pack
     definition = (core.definition if core else "").strip()
     intuition = (core.intuition if core else "").strip()
-    key_steps = list(core.key_steps) if core else []
+    stepwise_breakdown_required = bool(getattr(core, "stepwise_breakdown_required", False)) if core else False
+    key_steps = _normalize_key_steps(list(core.key_steps) if core else [])
     common_mistakes = list(core.common_mistakes) if core else []
     recap = list(core.recap) if core else []
     examples = list(core.examples) if core else []
@@ -47,6 +48,7 @@ def build_learning_content(
     grounding = (engine_output or {}).get("grounding") or {}
 
     highlights = _compact_list(recap[:5]) or _compact_list(key_steps[:5])
+    should_render_step_section = stepwise_breakdown_required and len(key_steps) >= 2
 
     metadata = {
         "subject": subject_name,
@@ -62,6 +64,7 @@ def build_learning_content(
         "retrieval_status": grounding.get("retrieval_status"),
         "source_count": grounding.get("source_count", len(references)),
         "retrieved_at": grounding.get("retrieved_at"),
+        "stepwise_breakdown_required": stepwise_breakdown_required,
         "queries": grounding.get("queries", []),
         "sources": grounding.get("sources") or [
             {
@@ -81,15 +84,6 @@ def build_learning_content(
         overview_blocks.append({"type": "paragraph", "text": definition})
     if intuition:
         overview_blocks.append({"type": "paragraph", "text": intuition})
-    if highlights:
-        overview_blocks.append(
-            {
-                "type": "callout",
-                "variant": "highlight",
-                "title": "Key Highlights",
-                "content": highlights,
-            }
-        )
     sections.append(
         LearningSection(
             id=_slugify("Overview"),
@@ -100,39 +94,27 @@ def build_learning_content(
         )
     )
 
-    core_children: list[LearningSection] = []
-    for index, step in enumerate(key_steps, start=1):
-        title = _short_title(step, fallback=f"Step {index}")
-        core_children.append(
+    if highlights:
+        sections.append(
             LearningSection(
-                id=_slugify(f"step-{index}-{title}"),
-                title=f"Step {index}: {title}",
-                level=3,
-                blocks=[{"type": "paragraph", "text": step}],
+                id=_slugify("Key Highlights"),
+                title="Key Highlights",
+                level=2,
+                blocks=[{"type": "list", "style": "bullet", "items": highlights}],
                 children=[],
             )
         )
-    core_blocks: list[dict[str, Any]] = []
-    if key_steps:
-        core_blocks.append({"type": "list", "style": "number", "items": key_steps})
-    if highlights:
-        core_blocks.append(
-            {
-                "type": "callout",
-                "variant": "takeaway",
-                "title": "Why This Matters",
-                "content": highlights,
-            }
+
+    if should_render_step_section:
+        sections.append(
+            LearningSection(
+                id=_slugify("Key Steps"),
+                title="Key Steps",
+                level=2,
+                blocks=[{"type": "list", "style": "number", "items": key_steps}],
+                children=[],
+            )
         )
-    sections.append(
-        LearningSection(
-            id=_slugify("Core Concepts"),
-            title="Core Concepts",
-            level=2,
-            blocks=core_blocks,
-            children=core_children,
-        )
-    )
 
     explanation_blocks = _split_text_with_code(full_text)
     if explanation_blocks:
@@ -193,24 +175,6 @@ def build_learning_content(
                 title="Formulas",
                 level=2,
                 blocks=formula_blocks,
-                children=[],
-            )
-        )
-
-    if highlights:
-        sections.append(
-            LearningSection(
-                id=_slugify("Key Notes"),
-                title="Key Notes",
-                level=2,
-                blocks=[
-                    {
-                        "type": "callout",
-                        "variant": "note",
-                        "title": "Key Notes",
-                        "content": highlights,
-                    }
-                ],
                 children=[],
             )
         )
@@ -315,6 +279,21 @@ def build_search_text(content: LearningContent) -> str:
 
     cleaned = [piece.strip() for piece in pieces if piece and str(piece).strip()]
     return " ".join(cleaned).strip()
+
+
+def _normalize_key_steps(items: list[str]) -> list[str]:
+    cleaned_steps: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = str(item).strip()
+        if not cleaned:
+            continue
+        normalized = re.sub(r"\s+", " ", cleaned.lower()).strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned_steps.append(cleaned)
+    return cleaned_steps
 
 
 def _block_text(block: dict[str, Any]) -> Iterable[str]:
@@ -580,9 +559,96 @@ def normalize_learning_content(content: LearningContent) -> LearningContent:
         for child in section.children:
             _normalize_section(child)
 
-    for section in content.sections:
-        _normalize_section(section)
+    def _normalize_section_list(sections: list[LearningSection]) -> list[LearningSection]:
+        normalized_sections: list[LearningSection] = []
+        for section in sections:
+            _normalize_section(section)
+            section.children = _normalize_section_list(section.children or [])
+            normalized = _cleanup_learning_section(section)
+            if normalized is None:
+                continue
+            normalized_sections.append(normalized)
+        return normalized_sections
+
+    content.sections = _normalize_section_list(content.sections or [])
     return content
+
+
+def _cleanup_learning_section(section: LearningSection) -> LearningSection | None:
+    normalized_title = section.title.strip().lower()
+    if normalized_title not in {"key steps", "core ideas"}:
+        return section if section.blocks or section.children else None
+
+    cleaned_blocks: list[dict[str, Any]] = []
+    numbered_step_items: list[str] = []
+    for block in section.blocks:
+        if not isinstance(block, dict):
+            continue
+        if (
+            block.get("type") == "callout"
+            and str(block.get("title", "")).strip().lower() == "why this matters"
+        ):
+            continue
+        if block.get("type") == "list" and str(block.get("style", "")).strip().lower() == "number":
+            step_items = _normalize_key_steps([str(item).strip() for item in block.get("items", []) if str(item).strip()])
+            if step_items:
+                block["items"] = step_items
+                numbered_step_items = step_items
+            else:
+                continue
+        cleaned_blocks.append(block)
+
+    section.blocks = cleaned_blocks
+    if numbered_step_items and _children_duplicate_step_items(section.children, numbered_step_items):
+        section.children = []
+
+    if len(numbered_step_items) < 2 and not _has_meaningful_non_step_blocks(section.blocks):
+        return None
+
+    if numbered_step_items:
+        section.title = "Key Steps"
+    elif normalized_title == "core ideas":
+        section.title = "Key Highlights"
+
+    return section if section.blocks or section.children else None
+
+
+def _children_duplicate_step_items(children: list[LearningSection], step_items: list[str]) -> bool:
+    if not children or not step_items:
+        return False
+    child_step_texts = [_extract_step_child_text(child) for child in children]
+    if not child_step_texts or any(not text for text in child_step_texts):
+        return False
+    normalized_items = {normalize_text(item) for item in step_items if normalize_text(item)}
+    normalized_children = {normalize_text(text) for text in child_step_texts if normalize_text(text)}
+    return bool(normalized_items) and normalized_children.issubset(normalized_items)
+
+
+def _extract_step_child_text(section: LearningSection) -> str:
+    for block in section.blocks:
+        if isinstance(block, dict) and block.get("type") == "paragraph":
+            text = str(block.get("text", "")).strip()
+            if text:
+                return text
+    return section.title
+
+
+def _has_meaningful_non_step_blocks(blocks: list[dict[str, Any]]) -> bool:
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type", "")).strip().lower()
+        if block_type != "list":
+            return True
+        if str(block.get("style", "")).strip().lower() != "number":
+            items = [str(item).strip() for item in block.get("items", []) if str(item).strip()]
+            if items:
+                return True
+    return False
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
 
 
 def _parse_structured_text(raw_text: str) -> Any | None:

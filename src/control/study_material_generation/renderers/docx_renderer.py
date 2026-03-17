@@ -23,21 +23,25 @@ class DocxRenderer:
             document.add_paragraph(pack.definition)
             document.add_paragraph(pack.intuition)
 
-            document.add_heading("Key Steps", level=2)
-            for step in pack.key_steps:
-                document.add_paragraph(step, style="List Bullet")
+            if pack.stepwise_breakdown_required and pack.key_steps:
+                document.add_heading("Key Steps", level=2)
+                for step in pack.key_steps:
+                    document.add_paragraph(step, style="List Bullet")
 
-            document.add_heading("Worked Examples", level=2)
-            for example in pack.examples:
-                document.add_paragraph(example, style="List Number")
+            if pack.examples:
+                document.add_heading("Worked Examples", level=2)
+                for example in pack.examples:
+                    document.add_paragraph(example, style="List Number")
 
-            document.add_heading("Common Mistakes", level=2)
-            for mistake in pack.common_mistakes:
-                document.add_paragraph(mistake, style="List Bullet")
+            if pack.common_mistakes:
+                document.add_heading("Common Mistakes", level=2)
+                for mistake in pack.common_mistakes:
+                    document.add_paragraph(mistake, style="List Bullet")
 
-            document.add_heading("Quick Revision", level=2)
-            for line in pack.recap:
-                document.add_paragraph(line, style="List Bullet")
+            if pack.recap:
+                document.add_heading("Quick Revision", level=2)
+                for line in pack.recap:
+                    document.add_paragraph(line, style="List Bullet")
 
         output_path = output_dir / "study_material.docx"
         document.save(str(output_path))

@@ -36,6 +36,21 @@ _INTERROGATIVE_PREFIXES = (
     "where ",
 )
 
+_VAGUE_FLASHCARD_LABELS = {
+    "core idea",
+    "concept insight",
+    "key step",
+    "key formula",
+    "common pitfall",
+    "quick recall",
+    "practice pattern",
+    "method",
+    "intuition",
+    "verification",
+    "why it matters",
+    "core importance",
+}
+
 _HEADING_VERB_PREFIXES = (
     "absorb",
     "take",
@@ -101,6 +116,7 @@ def build_flashcards(
     max_cards: int = 15,
 ) -> list[dict[str, str]]:
     cards: list[dict[str, str]] = []
+    cards.extend(_normalize_raw_cards(raw_flashcards or [], concept_name=concept_name))
     cards.extend(
         _build_structured_cards(
             concept_name=concept_name,
@@ -112,7 +128,6 @@ def build_flashcards(
             formulas=formulas or [],
         )
     )
-    cards.extend(_normalize_raw_cards(raw_flashcards or [], concept_name=concept_name))
     cards.extend(_build_fallback_cards(concept_name))
     return _dedupe_cards(cards)[:max_cards]
 
@@ -145,7 +160,7 @@ def _build_structured_cards(
     if _clean_text(definition):
         cards.append(
             {
-                "question": concept_name,
+                "question": f"What is {concept_name}?",
                 "hint": _DEFAULT_HINTS["core"],
                 "answer": _compact_answer(definition, max_sentences=2),
                 "kind": "core",
@@ -155,9 +170,9 @@ def _build_structured_cards(
     if _clean_text(intuition):
         cards.append(
             {
-                "question": f"{concept_name} Intuition",
+                "question": f"Why does {concept_name} make sense?",
                 "hint": _DEFAULT_HINTS["intuition"],
-                "answer": _compact_answer(intuition, max_sentences=3),
+                "answer": _compact_answer(intuition, max_sentences=2),
                 "kind": "intuition",
             }
         )
@@ -168,12 +183,7 @@ def _build_structured_cards(
             continue
         cards.append(
             {
-                "question": _derive_heading_from_text(
-                    cleaned,
-                    kind="step",
-                    concept_name=concept_name,
-                    index=index,
-                ),
+                "question": _question_from_step(cleaned, concept_name=concept_name, index=index),
                 "hint": _DEFAULT_HINTS["step"],
                 "answer": _compact_answer(cleaned, max_sentences=2),
                 "kind": "step",
@@ -186,7 +196,7 @@ def _build_structured_cards(
             continue
         cards.append(
             {
-                "question": _formula_heading(cleaned, index),
+                "question": _formula_question(cleaned, concept_name=concept_name, index=index),
                 "hint": _DEFAULT_HINTS["formula"],
                 "answer": cleaned,
                 "kind": "formula",
@@ -199,12 +209,7 @@ def _build_structured_cards(
             continue
         cards.append(
             {
-                "question": _derive_heading_from_text(
-                    cleaned,
-                    kind="pitfall",
-                    concept_name=concept_name,
-                    index=index,
-                ),
+                "question": _question_from_pitfall(cleaned, concept_name=concept_name, index=index),
                 "hint": _DEFAULT_HINTS["pitfall"],
                 "answer": _compact_answer(cleaned, max_sentences=2),
                 "kind": "pitfall",
@@ -217,12 +222,7 @@ def _build_structured_cards(
             continue
         cards.append(
             {
-                "question": _derive_heading_from_text(
-                    cleaned,
-                    kind="summary",
-                    concept_name=concept_name,
-                    index=index,
-                ),
+                "question": _question_from_summary(cleaned, concept_name=concept_name, index=index),
                 "hint": _DEFAULT_HINTS["summary"],
                 "answer": _compact_answer(cleaned, max_sentences=2),
                 "kind": "summary",
@@ -241,7 +241,7 @@ def _normalize_raw_cards(
     for index, item in enumerate(raw_flashcards, start=1):
         if not isinstance(item, dict):
             continue
-        answer = _compact_answer(str(item.get("answer", "")), max_sentences=3)
+        answer = _compact_answer(str(item.get("answer", "")), max_sentences=2)
         if not answer:
             continue
         raw_question = _clean_text(str(item.get("question", "")))
@@ -267,49 +267,49 @@ def _normalize_raw_cards(
 def _build_fallback_cards(concept_name: str) -> list[dict[str, str]]:
     return [
         {
-            "question": concept_name,
+            "question": f"What is {concept_name}?",
             "hint": _DEFAULT_HINTS["core"],
             "answer": f"{concept_name} is a foundational topic that students should be able to explain clearly and apply with confidence.",
             "kind": "core",
         },
         {
-            "question": "Core Importance",
+            "question": f"Why is {concept_name} important?",
             "hint": _DEFAULT_HINTS["summary"],
             "answer": "The topic builds understanding that supports later steps, applications, and accuracy checks.",
             "kind": "summary",
         },
         {
-            "question": "Intuition",
+            "question": f"What intuitive idea helps explain {concept_name}?",
             "hint": _DEFAULT_HINTS["intuition"],
             "answer": f"Think of {concept_name} as an idea that becomes easier when the rule and the reason behind it are both remembered.",
             "kind": "intuition",
         },
         {
-            "question": "Method",
+            "question": f"Which step should you identify first in {concept_name}?",
             "hint": _DEFAULT_HINTS["step"],
             "answer": "Start by identifying the rule or relationship that controls the concept before solving further.",
             "kind": "step",
         },
         {
-            "question": "Verification",
+            "question": f"What should you verify after applying {concept_name}?",
             "hint": _DEFAULT_HINTS["practice"],
             "answer": "After solving, check that the method, units, and final result stay consistent with the concept.",
             "kind": "practice",
         },
         {
-            "question": "Common Pitfall",
+            "question": f"What common mistake should you avoid in {concept_name}?",
             "hint": _DEFAULT_HINTS["pitfall"],
             "answer": "Students often skip an intermediate step or use the right idea in the wrong order.",
             "kind": "pitfall",
         },
         {
-            "question": "Practice Pattern",
+            "question": f"How should you revise {concept_name} effectively?",
             "hint": _DEFAULT_HINTS["practice"],
             "answer": "Revise by recalling the definition, the main steps, and one solved example instead of only rereading notes.",
             "kind": "practice",
         },
         {
-            "question": "Quick Recall",
+            "question": f"What is the quickest high-value review pattern for {concept_name}?",
             "hint": _DEFAULT_HINTS["summary"],
             "answer": "Strong recall comes from short, repeated review of the core meaning, process, and common mistake.",
             "kind": "summary",
@@ -323,6 +323,18 @@ def _normalize_kind(raw_kind: str, question: str) -> str:
         return normalized
 
     question_text = question.lower()
+    if question_text in {"core idea", "definition", "main idea"}:
+        return "core"
+    if question_text in {"intuition", "concept insight"}:
+        return "intuition"
+    if question_text in {"quick recall", "core importance", "why it matters"}:
+        return "summary"
+    if question_text in {"method", "key step"}:
+        return "step"
+    if question_text in {"common pitfall"}:
+        return "pitfall"
+    if question_text in {"practice pattern", "verification"}:
+        return "practice"
     if "mistake" in question_text or "pitfall" in question_text or "avoid" in question_text:
         return "pitfall"
     if "formula" in question_text or "equation" in question_text or "relation" in question_text:
@@ -346,32 +358,147 @@ def _normalize_question(
     concept_name: str,
     answer: str,
 ) -> str:
-    cleaned = raw_question.strip().rstrip("?").strip()
-    if _is_heading_candidate(cleaned) and not _is_heading_too_close_to_answer(cleaned, answer):
-        return cleaned
+    cleaned = raw_question.strip()
+    if _is_question_candidate(cleaned) and not _is_question_too_close_to_answer(cleaned, answer):
+        return _ensure_question(cleaned)
 
-    derived_from_question = _derive_heading_from_text(
-        cleaned,
-        kind=kind,
-        concept_name=concept_name,
-        index=index,
-    )
-    if derived_from_question and not _is_heading_too_close_to_answer(derived_from_question, answer):
-        return derived_from_question
+    if cleaned:
+        derived_from_question = _question_from_heading(
+            cleaned,
+            kind=kind,
+            concept_name=concept_name,
+            index=index,
+        )
+        if derived_from_question and not _is_question_too_close_to_answer(derived_from_question, answer):
+            return derived_from_question
 
-    derived_from_answer = _derive_heading_from_text(
+    return _question_from_heading(
         answer,
         kind=kind,
         concept_name=concept_name,
         index=index,
     )
-    if derived_from_answer:
-        return derived_from_answer
 
-    fallback = _HEADING_FALLBACKS.get(kind, "Key Recall")
-    if kind in {"step", "formula", "pitfall", "summary", "concept", "practice"}:
-        return f"{fallback} {index}"
-    return concept_name if kind == "core" else fallback
+
+def _question_from_heading(
+    text: str,
+    *,
+    kind: str,
+    concept_name: str,
+    index: int,
+) -> str:
+    cleaned = _clean_text(text).rstrip("?").strip()
+    if kind == "core":
+        return f"What is {concept_name}?"
+    if kind == "intuition":
+        return f"Why does {concept_name} make sense?"
+    if kind == "formula":
+        return _formula_question(cleaned, concept_name=concept_name, index=index)
+    if kind == "pitfall":
+        return _question_from_pitfall(cleaned, concept_name=concept_name, index=index)
+    if kind == "summary":
+        return _question_from_summary(cleaned, concept_name=concept_name, index=index)
+    if kind == "practice":
+        return _question_from_practice(cleaned, concept_name=concept_name, index=index)
+    if kind == "step":
+        return _question_from_step(cleaned, concept_name=concept_name, index=index)
+    return _question_from_concept(cleaned, concept_name=concept_name, index=index)
+
+
+def _question_from_step(text: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return f"Which step matters most in {concept_name}?"
+
+    lowered = cleaned.lower()
+    step_match = re.match(r"^(?:step\s+\d+[:.\-]?\s*)?(first|next|then|finally)\s+(.+)$", lowered)
+    if step_match:
+        stage = step_match.group(1)
+        if stage == "then":
+            stage = "next"
+        return _ensure_question(f"What happens {stage} in {concept_name}")
+    if lowered.startswith(("check ", "verify ")):
+        return _ensure_question(f"What should you check in {concept_name}")
+    return _ensure_question(f"What is step {index} in {concept_name}")
+
+
+def _question_from_pitfall(text: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return f"What common mistake should you avoid in {concept_name}?"
+    if re.search(r"\b(confusing|mixing)\b", cleaned, flags=re.IGNORECASE):
+        return _ensure_question(f"Which ideas are commonly confused in {concept_name}?")
+    if re.search(r"\b(skip|skipping|miss|missing|forget|forgetting|ignore|ignoring)\b", cleaned, flags=re.IGNORECASE):
+        return _ensure_question(f"What important check is often missed in {concept_name}?")
+    return _ensure_question(f"What common mistake should you avoid in {concept_name}?")
+
+
+def _question_from_summary(text: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return f"What is the main takeaway from {concept_name}?"
+    if re.search(r"\bimportant|matters|helps|used\b", cleaned, flags=re.IGNORECASE):
+        return _ensure_question(f"Why does {concept_name} matter?")
+    return _ensure_question(f"What is a key takeaway from {concept_name}?")
+
+
+def _question_from_practice(text: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return f"How should you practice {concept_name}?"
+    if re.search(r"\b(check|verify|verification)\b", cleaned, flags=re.IGNORECASE):
+        return _ensure_question(f"What should you verify after applying {concept_name}?")
+    return _ensure_question(f"How should you practice {concept_name}?")
+
+
+def _question_from_concept(text: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return f"What should you remember about {concept_name}?"
+    lowered = cleaned.lower()
+    if lowered not in _VAGUE_FLASHCARD_LABELS and len(cleaned.split()) <= 5 and not re.search(r"[.:,;]", cleaned):
+        return _ensure_question(f"What is {cleaned}")
+    if re.search(r"\bwhy\b", cleaned, flags=re.IGNORECASE):
+        return _ensure_question(f"Why is {concept_name} used?")
+    return _ensure_question(f"What should you remember about {concept_name}?")
+
+
+def _formula_question(formula: str, *, concept_name: str, index: int) -> str:
+    cleaned = _clean_text(formula)
+    if not cleaned:
+        return f"Which formula is used in {concept_name}?"
+    left, _, _ = cleaned.partition("=")
+    left = left.strip()
+    if left and len(left) <= 18:
+        return _ensure_question(f"What is the formula for {left}?")
+    return _ensure_question(f"Which formula is used in {concept_name}?")
+
+
+def _is_question_candidate(value: str) -> bool:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    return cleaned.endswith("?") or any(lowered.startswith(prefix) for prefix in _INTERROGATIVE_PREFIXES)
+
+
+def _ensure_question(value: str) -> str:
+    cleaned = _clean_text(value).rstrip("?").strip()
+    if not cleaned:
+        return "What should you remember?"
+    return f"{cleaned}?"
+
+
+def _is_question_too_close_to_answer(question: str, answer: str) -> bool:
+    question_key = _normalize_key(question.rstrip("?"))
+    answer_key = _normalize_key(answer)
+    if not question_key or not answer_key:
+        return False
+    if question_key == answer_key:
+        return True
+    if len(question_key.split()) >= 4 and answer_key.startswith(question_key):
+        return True
+    return False
 
 
 def _formula_heading(formula: str, index: int) -> str:

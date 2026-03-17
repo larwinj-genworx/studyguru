@@ -311,7 +311,7 @@ class PdfRenderer:
                 if formulas_list:
                     story.append(formulas_list)
 
-            if pack.key_steps:
+            if pack.stepwise_breakdown_required and pack.key_steps:
                 story.append(Paragraph("Key Steps", section_style))
                 steps_list = list_flow(pack.key_steps, item_style=body_style)
                 if steps_list:

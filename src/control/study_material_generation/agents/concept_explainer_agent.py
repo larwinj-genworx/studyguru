@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .base import BaseStructuredAgent
@@ -7,6 +8,62 @@ from src.config.settings import Settings
 
 
 class ConceptExplainerAgent(BaseStructuredAgent):
+    _STEP_ACTION_PREFIXES = (
+        "identify",
+        "determine",
+        "find",
+        "check",
+        "rewrite",
+        "substitute",
+        "simplify",
+        "solve",
+        "calculate",
+        "compare",
+        "draw",
+        "label",
+        "plot",
+        "arrange",
+        "classify",
+        "verify",
+        "apply",
+        "use",
+        "start",
+        "first",
+        "next",
+        "then",
+        "finally",
+    )
+
+    _GENERIC_STUDY_PREFIXES = (
+        "understand",
+        "learn",
+        "remember",
+        "revise",
+        "practice",
+        "study",
+        "read",
+        "know",
+        "be aware",
+    )
+
+    _PROCEDURAL_SIGNAL_KEYWORDS = (
+        "step",
+        "procedure",
+        "process",
+        "workflow",
+        "algorithm",
+        "method",
+        "derive",
+        "derivation",
+        "calculation",
+        "compute",
+        "solve",
+        "construct",
+        "experiment",
+        "measurement",
+        "proof",
+    )
+
     def __init__(self, settings: Settings) -> None:
         super().__init__(
             settings,
@@ -39,11 +96,16 @@ class ConceptExplainerAgent(BaseStructuredAgent):
             f"Revision Feedback: {revision_feedback or 'None'}\n"
             f"Evidence Pack:\n{evidence_text}\n\n"
             "Return JSON with keys: definition (string), intuition (string), formulas (list), "
-            "key_steps (list), common_mistakes (list), recap (list), "
+            "stepwise_breakdown_required (boolean), key_steps (list), common_mistakes (list), recap (list), "
             "practical_examples_required (boolean). "
             "Definition should be 70-110 words. Intuition should be 3-5 short sentences. "
-            "Provide 6-9 key_steps, 4-6 common_mistakes, and 4-6 recap bullets. "
+            "Provide 4-6 common_mistakes and 4-6 recap bullets. "
             "Formulas: include only if the concept truly uses equations/formulae; otherwise return an empty list. "
+            "Always include the key_steps field in the JSON response. Use an empty list when no stepwise section is needed. "
+            "Set stepwise_breakdown_required to true only when the concept genuinely needs an ordered process, derivation, workflow, proof sequence, experiment sequence, or multi-step solving method. "
+            "If stepwise_breakdown_required is true, provide 3-6 short action-oriented key_steps. "
+            "If the topic is mostly descriptive, definitional, conceptual, or theory-based, set stepwise_breakdown_required to false and return key_steps as an empty list. "
+            "Do not force generic study advice or fake procedural steps for non-procedural topics. "
             "Set practical_examples_required to false only when the concept is purely theoretical "
             "and does not lend itself to realistic practical examples. "
             "Use the evidence pack as the factual grounding. If the evidence is thin, keep wording careful and avoid unsupported claims. "
@@ -57,7 +119,6 @@ class ConceptExplainerAgent(BaseStructuredAgent):
             required_keys=[
                 "definition",
                 "intuition",
-                "key_steps",
                 "common_mistakes",
                 "recap",
             ],
@@ -65,10 +126,10 @@ class ConceptExplainerAgent(BaseStructuredAgent):
         definition = str(data.get("definition", "")).strip()
         intuition = str(data.get("intuition", "")).strip()
         formulas = self.to_list(data.get("formulas"), [])
-        key_steps = self.to_list(data.get("key_steps"), [])
+        raw_key_steps = self.to_list(data.get("key_steps"), [])
         common_mistakes = self.to_list(data.get("common_mistakes"), [])
         recap = self.to_list(data.get("recap"), [])
-        if not definition or not intuition or not key_steps or not common_mistakes or not recap:
+        if not definition or not intuition or not common_mistakes or not recap:
             raise ValueError("ConceptExplainerAgent produced incomplete core notes.")
 
         def _word_count(text: str) -> int:
@@ -112,18 +173,16 @@ class ConceptExplainerAgent(BaseStructuredAgent):
                 ).strip()
             return _limit_words(expanded, max_words)
 
-        def _to_bool(value: Any, default: bool = True) -> bool:
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                normalized = value.strip().lower()
-                if normalized in {"false", "no", "0", "not required"}:
-                    return False
-                if normalized in {"true", "yes", "1", "required"}:
-                    return True
-            return default
-
         objectives = self.to_list(coverage_map.get("objectives"), [])
+        stepwise_breakdown_required, key_steps = self._normalize_key_steps(
+            concept_name=concept_name,
+            definition=definition,
+            raw_key_steps=raw_key_steps,
+            formulas=formulas,
+            objectives=objectives,
+            teaching_plan=teaching_plan,
+            requested_flag=data.get("stepwise_breakdown_required"),
+        )
         definition = _ensure_definition_min_words(
             definition,
             min_words=70,
@@ -133,13 +192,88 @@ class ConceptExplainerAgent(BaseStructuredAgent):
         )
         intuition = _limit_words(intuition, 90)
         formulas = [str(item).strip() for item in formulas if str(item).strip()][:6]
-        practical_examples_required = _to_bool(data.get("practical_examples_required"), default=True)
+        practical_examples_required = self._to_bool(data.get("practical_examples_required"), default=True)
         return {
             "definition": definition,
             "intuition": intuition,
             "formulas": formulas,
+            "stepwise_breakdown_required": stepwise_breakdown_required,
             "key_steps": key_steps[:10],
             "common_mistakes": common_mistakes[:8],
             "recap": recap[:8],
             "practical_examples_required": practical_examples_required,
         }
+
+    def _normalize_key_steps(
+        self,
+        *,
+        concept_name: str,
+        definition: str,
+        raw_key_steps: list[str],
+        formulas: list[str],
+        objectives: list[str],
+        teaching_plan: dict[str, Any],
+        requested_flag: Any,
+    ) -> tuple[bool, list[str]]:
+        cleaned_steps: list[str] = []
+        seen: set[str] = set()
+        for step in raw_key_steps:
+            cleaned = str(step).strip().strip("-").strip()
+            if not cleaned:
+                continue
+            normalized = " ".join(cleaned.lower().split())
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            cleaned_steps.append(cleaned)
+
+        action_steps = [step for step in cleaned_steps if self._looks_like_step(step)]
+        requested = self._to_bool(requested_flag, default=False)
+
+        evidence_text = " ".join(
+            [
+                concept_name,
+                definition,
+                " ".join(formulas),
+                " ".join(objectives),
+                " ".join(self.to_list(teaching_plan.get("lesson_flow"), [])),
+                " ".join(self.to_list(teaching_plan.get("teaching_tips"), [])),
+            ]
+        ).lower()
+        procedural_signal_present = any(keyword in evidence_text for keyword in self._PROCEDURAL_SIGNAL_KEYWORDS)
+        if len(action_steps) < 2:
+            return False, []
+
+        should_keep_steps = requested or procedural_signal_present
+
+        if not should_keep_steps:
+            return False, []
+
+        return bool(action_steps), action_steps[:6]
+
+    def _looks_like_step(self, value: str) -> bool:
+        cleaned = " ".join(str(value).strip().split())
+        if not cleaned:
+            return False
+        lowered = cleaned.lower()
+        if len(cleaned.split()) < 3:
+            return False
+        if any(lowered.startswith(prefix) for prefix in self._GENERIC_STUDY_PREFIXES):
+            return False
+        if any(lowered.startswith(prefix) for prefix in self._STEP_ACTION_PREFIXES):
+            return True
+        if re.match(r"^(step\s+\d+|first|next|then|finally)\b", lowered):
+            return True
+        return False
+
+    @staticmethod
+    def _to_bool(value: Any, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"false", "no", "0", "not required"}:
+                return False
+            if normalized in {"true", "yes", "1", "required"}:
+                return True
+        return default

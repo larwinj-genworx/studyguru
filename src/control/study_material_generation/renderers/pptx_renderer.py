@@ -44,7 +44,9 @@ class PptxRenderer:
 
     def _add_concept_slides(self, presentation: Any, pack: ConceptContentPack) -> None:
         # Dynamic 5-8 slides per concept based on content depth.
-        complexity = len(pack.key_steps) + len(pack.examples) + len(pack.common_mistakes)
+        complexity = len(pack.examples) + len(pack.common_mistakes)
+        if pack.stepwise_breakdown_required:
+            complexity += len(pack.key_steps)
         extra_slides = 0
         if complexity > 10:
             extra_slides += 1
@@ -57,26 +59,30 @@ class PptxRenderer:
             title=f"{pack.concept_name}: What and Why",
             bullets=[pack.definition, pack.intuition],
         )
-        self._add_bullet_slide(
-            presentation,
-            title=f"{pack.concept_name}: Key Steps",
-            bullets=pack.key_steps[:6],
-        )
-        self._add_bullet_slide(
-            presentation,
-            title=f"{pack.concept_name}: Worked Examples",
-            bullets=pack.examples[:5],
-        )
-        self._add_bullet_slide(
-            presentation,
-            title=f"{pack.concept_name}: Common Mistakes",
-            bullets=pack.common_mistakes[:5],
-        )
-        self._add_bullet_slide(
-            presentation,
-            title=f"{pack.concept_name}: Quick Recap",
-            bullets=pack.recap[:6],
-        )
+        if pack.stepwise_breakdown_required and pack.key_steps:
+            self._add_bullet_slide(
+                presentation,
+                title=f"{pack.concept_name}: Key Steps",
+                bullets=pack.key_steps[:6],
+            )
+        if pack.examples:
+            self._add_bullet_slide(
+                presentation,
+                title=f"{pack.concept_name}: Worked Examples",
+                bullets=pack.examples[:5],
+            )
+        if pack.common_mistakes:
+            self._add_bullet_slide(
+                presentation,
+                title=f"{pack.concept_name}: Common Mistakes",
+                bullets=pack.common_mistakes[:5],
+            )
+        if pack.recap:
+            self._add_bullet_slide(
+                presentation,
+                title=f"{pack.concept_name}: Quick Recap",
+                bullets=pack.recap[:6],
+            )
 
         if extra_slides >= 1:
             practice_items = [item["question"] for item in pack.mcqs[:4]]
