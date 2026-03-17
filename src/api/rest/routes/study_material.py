@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import concept_image_app_service, enrollment_app_service, flashcard_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
+from src.core.services import admin_user_app_service, concept_image_app_service, enrollment_app_service, flashcard_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
 from src.core.services.object_storage_service import get_object_storage_service
 from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
@@ -13,6 +13,11 @@ from src.schemas.learning_bot import (
     LearningBotMessageCreate,
     LearningBotSessionDetailResponse,
     LearningBotTurnResponse,
+)
+from src.schemas.auth import (
+    AdminManagedStudentCreateRequest,
+    AdminManagedStudentResponse,
+    AdminManagedStudentUpdateRequest,
 )
 from src.schemas.study_material import (
     AdminConceptPlanUpdateRequest,
@@ -35,7 +40,6 @@ from src.schemas.study_material import (
     StudentTopicProgressResponse,
     StudentConceptSelection,
     SubjectCreate,
-    SubjectEnrollmentResponse,
     SubjectResponse,
     VideoFeedbackRequest,
 )
@@ -55,7 +59,11 @@ async def create_subject(
     payload: SubjectCreate,
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
-    return await study_material_app_service.create_subject(payload, owner_id=current_user["id"])
+    return await study_material_app_service.create_subject(
+        payload,
+        owner_id=current_user["id"],
+        organization_id=current_user["organization_id"],
+    )
 
 
 @router.post(
@@ -158,6 +166,52 @@ async def list_admin_subject_enrollments(
     return await enrollment_app_service.list_admin_subject_enrollments(
         subject_id=subject_id,
         owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/students",
+    response_model=list[AdminManagedStudentResponse],
+    dependencies=[Depends(require_role("admin"))],
+)
+async def list_admin_students(
+    current_user: dict = Depends(get_current_user),
+) -> list[AdminManagedStudentResponse]:
+    return await admin_user_app_service.list_managed_students(
+        current_user["organization_id"]
+    )
+
+
+@router.post(
+    "/admin/students",
+    response_model=AdminManagedStudentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def create_admin_student(
+    payload: AdminManagedStudentCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> AdminManagedStudentResponse:
+    return await admin_user_app_service.create_managed_student(
+        payload,
+        current_user["organization_id"],
+    )
+
+
+@router.patch(
+    "/admin/students/{student_id}",
+    response_model=AdminManagedStudentResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def update_admin_student(
+    student_id: str,
+    payload: AdminManagedStudentUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> AdminManagedStudentResponse:
+    return await admin_user_app_service.update_managed_student(
+        student_id=student_id,
+        payload=payload,
+        organization_id=current_user["organization_id"],
     )
 
 
@@ -579,19 +633,6 @@ async def list_published_subjects(
     current_user: dict = Depends(get_current_user),
 ) -> list[SubjectResponse]:
     return await enrollment_app_service.list_student_subjects(current_user["id"])
-
-
-@router.post(
-    "/student/subjects/{subject_id}/enroll",
-    response_model=SubjectEnrollmentResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role("student"))],
-)
-async def enroll_student_subject(
-    subject_id: str,
-    current_user: dict = Depends(get_current_user),
-) -> SubjectEnrollmentResponse:
-    return await enrollment_app_service.enroll_student(subject_id, current_user["id"])
 
 
 @router.get(

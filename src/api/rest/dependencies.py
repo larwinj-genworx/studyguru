@@ -32,7 +32,15 @@ async def get_current_user(request: Request, authorization: str | None = Header(
     user = await auth_repository.get_user_by_id(user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
-    return {"id": user.id, "email": user.email, "role": user.role}
+    organization = await auth_repository.get_organization_by_id(user.organization_id)
+    if not organization or not organization.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Organization not found.")
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "organization_id": user.organization_id,
+    }
 
 
 def require_role(expected_role: str):

@@ -32,9 +32,10 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             f"Concept ID: {concept_id}\n"
             f"Concept: {concept_name}\n"
             f"Content Inputs: {content}\n\n"
-            "Return final JSON with keys: definition, intuition, formulas, key_steps, common_mistakes, "
+            "Return final JSON with keys: definition, intuition, formulas, stepwise_breakdown_required, key_steps, common_mistakes, "
             "examples, mcqs, flashcards, references, recap. "
             "If Content Inputs.examples already contains structured worked-example payloads, preserve that structure instead of rewriting them into generic summary sentences. "
+            "Preserve stepwise_breakdown_required from Content Inputs. If it is false, keep key_steps as an empty list instead of forcing a process section. "
             "Use empty lists where needed. "
             "Strict rule: final output must be coherent and fully bound to this concept. "
             "Do not invent or add references; use exactly the references provided in Content Inputs. "
@@ -45,7 +46,13 @@ class ArtifactSpecAgent(BaseStructuredAgent):
         definition = str(data.get("definition") or content.get("definition") or "").strip()
         intuition = str(data.get("intuition") or content.get("intuition") or "").strip()
         formulas = self.to_list(data.get("formulas"), self.to_list(content.get("formulas"), []))
+        stepwise_breakdown_required = self._to_bool(
+            data.get("stepwise_breakdown_required", content.get("stepwise_breakdown_required")),
+            default=bool(content.get("stepwise_breakdown_required", False)),
+        )
         key_steps = self.to_list(data.get("key_steps"), self.to_list(content.get("key_steps"), []))[:8]
+        if not stepwise_breakdown_required:
+            key_steps = []
         common_mistakes = self.to_list(
             data.get("common_mistakes"),
             self.to_list(content.get("common_mistakes"), []),
@@ -54,7 +61,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
         generated_examples = self.to_list(data.get("examples"), [])
         examples = (source_examples or generated_examples)[:5]
         recap = self.to_list(data.get("recap"), self.to_list(content.get("recap"), []))[:8]
-        if not definition or not intuition or not key_steps or not common_mistakes or not recap:
+        if not definition or not intuition or not common_mistakes or not recap:
             raise ValueError("ArtifactSpecAgent produced incomplete concept payload.")
         practical_required = bool(content.get("practical_examples_required", True))
         if practical_required and not examples:
@@ -97,6 +104,7 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             concept_name=concept_name,
             definition=definition,
             intuition=intuition,
+            stepwise_breakdown_required=stepwise_breakdown_required,
             formulas=[str(item).strip() for item in formulas if str(item).strip()][:6],
             key_steps=key_steps,
             common_mistakes=common_mistakes,
@@ -107,3 +115,15 @@ class ArtifactSpecAgent(BaseStructuredAgent):
             recap=recap,
             practical_examples_required=practical_required,
         )
+
+    @staticmethod
+    def _to_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "yes", "1", "required"}:
+                return True
+            if normalized in {"false", "no", "0", "not required"}:
+                return False
+        return default

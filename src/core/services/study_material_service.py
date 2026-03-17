@@ -34,8 +34,9 @@ def artifact_index_to_json(index: ArtifactIndex | None) -> dict:
     return index.model_dump(exclude_none=True)
 
 
-def build_subject(payload: SubjectCreate, owner_id: str) -> Subject:
+def build_subject(payload: SubjectCreate, owner_id: str, organization_id: str) -> Subject:
     return Subject(
+        organization_id=organization_id,
         owner_id=owner_id,
         name=payload.name.strip(),
         grade_level=payload.grade_level.strip(),

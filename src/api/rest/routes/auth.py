@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Response, status
 from src.api.rest.dependencies import get_current_user
 from src.config.settings import get_settings
 from src.core.services import auth_application_service
-from src.schemas.auth import LoginRequest, SessionResponse, SignupRequest, TokenResponse, UserResponse
+from src.schemas.auth import LoginRequest, SessionResponse, TokenResponse, UserResponse
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -37,13 +37,6 @@ def _clear_auth_cookie(response: Response) -> None:
     )
 
 
-@router.post("/signup", response_model=TokenResponse, status_code=201)
-async def signup(payload: SignupRequest, response: Response) -> TokenResponse:
-    result = await auth_application_service.signup(payload)
-    _set_auth_cookie(response, result.access_token)
-    return result
-
-
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     result = await auth_application_service.login(payload)
@@ -65,5 +58,6 @@ async def get_session(current_user: dict = Depends(get_current_user)) -> Session
             user_id=current_user["id"],
             email=current_user["email"],
             role=current_user["role"],
+            organization_id=current_user["organization_id"],
         )
     )

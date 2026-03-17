@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException, status
 
 from src.config.settings import get_settings
-from src.core.services import study_material_service, learning_content_service
+from src.core.services import enrollment_app_service, study_material_service, learning_content_service
 from src.core.services.object_storage_service import get_object_storage_service
 from src.data.repositories import study_material_repository, material_job_repository
 from src.schemas.study_material import (
@@ -112,9 +112,17 @@ def _validate_published_subject_topic_plan(
             )
 
 
-async def create_subject(payload: SubjectCreate, owner_id: str) -> SubjectResponse:
-    subject = study_material_service.build_subject(payload, owner_id)
+async def create_subject(
+    payload: SubjectCreate,
+    owner_id: str,
+    organization_id: str,
+) -> SubjectResponse:
+    subject = study_material_service.build_subject(payload, owner_id, organization_id)
     subject = await study_material_repository.create_subject(subject)
+    await enrollment_app_service.sync_organization_subject_access(
+        organization_id,
+        subject_ids=[subject.id],
+    )
     concepts: list = []
     return study_material_service.to_subject_response(subject, concepts)
 
@@ -627,7 +635,7 @@ async def add_student_bookmark(user_id: str, subject_id: str, concept_id: str) -
     if not enrollment:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Enroll in this syllabus before bookmarking topics.",
+            detail="Your administrator must assign this syllabus before bookmarking topics.",
         )
     concept = await study_material_repository.get_concept(concept_id)
     if not concept or concept.subject_id != subject.id:

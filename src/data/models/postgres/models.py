@@ -15,10 +15,28 @@ from src.schemas.study_material import JobStatus, MaterialLifecycleStatus, Revie
 from src.schemas.quiz import QuizQuestionSourceType, QuizSessionStatus, QuizSessionType
 
 
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    users: Mapped[list["User"]] = relationship(back_populates="organization")
+    subjects: Mapped[list["Subject"]] = relationship(back_populates="organization")
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"),
+        index=True,
+        nullable=False,
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -27,6 +45,7 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
+    organization: Mapped["Organization"] = relationship(back_populates="users")
     subjects: Mapped[list["Subject"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
 
 
@@ -34,6 +53,11 @@ class Subject(Base):
     __tablename__ = "subjects"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid4().hex)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"),
+        index=True,
+        nullable=False,
+    )
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     grade_level: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -42,6 +66,7 @@ class Subject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+    organization: Mapped["Organization"] = relationship(back_populates="subjects")
     owner: Mapped["User"] = relationship(back_populates="subjects")
     concepts: Mapped[list["Concept"]] = relationship(back_populates="subject", cascade="all, delete-orphan")
 
