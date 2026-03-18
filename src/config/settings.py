@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CONCEPT_VISUAL_OUTPUT_DIR", "CONCEPT_IMAGE_OUTPUT_DIR"),
     )
     concept_visual_service_url: str = Field(
-        default="http://127.0.0.1:8002",
+        default="",
         alias="CONCEPT_VISUAL_SERVICE_URL",
     )
     concept_visual_service_token: str = Field(
