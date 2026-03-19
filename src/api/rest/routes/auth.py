@@ -39,6 +39,8 @@ def _clear_auth_cookie(response: Response) -> None:
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
+    """Authenticate a user and persist the access token in an HTTP-only cookie."""
+
     result = await auth_application_service.login(payload)
     _set_auth_cookie(response, result.access_token)
     return result
@@ -46,6 +48,8 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(response: Response) -> Response:
+    """Clear the current authentication cookie."""
+
     _clear_auth_cookie(response)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
@@ -53,6 +57,8 @@ async def logout(response: Response) -> Response:
 
 @router.get("/session", response_model=SessionResponse)
 async def get_session(current_user: dict = Depends(get_current_user)) -> SessionResponse:
+    """Return the authenticated user session."""
+
     return SessionResponse(
         user=UserResponse(
             user_id=current_user["id"],

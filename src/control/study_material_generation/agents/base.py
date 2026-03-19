@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import json
 import logging
 import os
@@ -16,20 +17,20 @@ try:
     import litellm  
 
     LITELLM_AVAILABLE = True
-except Exception:  
+except ImportError:
     litellm = None  
     LITELLM_AVAILABLE = False
 
 try:
     from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.prompts import ChatPromptTemplate
-except Exception:
+except ImportError:
     JsonOutputParser = None 
     ChatPromptTemplate = None 
 
 try:
     from langchain_groq import ChatGroq
-except Exception:  
+except ImportError:
     ChatGroq = None 
 
 logger = logging.getLogger("uvicorn.error")
@@ -39,6 +40,8 @@ class BaseStructuredAgent:
     _llm_semaphore_lock = threading.Lock()
     _llm_semaphore: threading.BoundedSemaphore | None = None
     _llm_semaphore_size: int | None = None
+    _llm_cache_lock = threading.Lock()
+    _llm_response_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def __init__(
         self,
@@ -93,6 +96,9 @@ class BaseStructuredAgent:
         required_keys: list[str] | None = None,
     ) -> dict[str, Any]:
         self._last_llm_error = None
+        cached = self._get_cached_payload(prompt=prompt, required_keys=required_keys)
+        if cached is not None:
+            return cached
         failures: list[str] = []
         retries = max(self.settings.agent_retry_attempts, 1)
         for attempt in range(1, retries + 1):
@@ -106,8 +112,9 @@ class BaseStructuredAgent:
                 if result is None:
                     raise ValueError("No JSON output returned by model path.")
                 self._validate_required_keys(result, required_keys)
+                self._store_cached_payload(prompt=prompt, required_keys=required_keys, payload=result)
                 return result
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 failures.append(f"attempt {attempt}: {exc}")
                 # If no model path produced any payload at all, waiting for more retries
                 # usually adds delay without improving output.
@@ -147,7 +154,7 @@ class BaseStructuredAgent:
                 content = str(content)
             try:
                 return self._extract_json(content)
-            except Exception as exc:
+            except ValueError as exc:
                 snippet = content.replace("\n", " ").strip()
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
@@ -158,7 +165,7 @@ class BaseStructuredAgent:
                     snippet,
                 )
                 return None
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._last_llm_error = f"ChatGroq request failed: {exc}"
             logger.info("[AgentLLM:%s] ChatGroq request failed; trying fallback path: %s", self.role, exc)
             return None
@@ -205,10 +212,10 @@ class BaseStructuredAgent:
                         if isinstance(parsed, dict):
                             return parsed
                         raise ValueError("Parsed JSON output is not an object.")
-                    except Exception as exc:
+                    except ValueError as exc:
                         parse_error = exc
                 return self._extract_json(content)
-            except Exception as exc:
+            except ValueError as exc:
                 if parse_error is not None:
                     exc = ValueError(f"{parse_error}; {exc}")
                 snippet = content.replace("\n", " ").strip()
@@ -221,7 +228,7 @@ class BaseStructuredAgent:
                     snippet,
                 )
                 return None
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             message = str(exc)
             if "response_format" in message or "json_object" in message:
                 self._chat_llm_json_disabled = True
@@ -260,7 +267,7 @@ class BaseStructuredAgent:
             if content is None:
                 raise ValueError("LiteLLM returned empty content.")
             return self._extract_json(str(content))
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._last_llm_error = f"LiteLLM request failed: {exc}"
             logger.info("[AgentLLM:%s] LiteLLM request failed: %s", self.role, exc)
             return None
@@ -500,6 +507,58 @@ class BaseStructuredAgent:
         if missing:
             raise ValueError(f"Missing required keys: {missing}")
 
+    def _get_cached_payload(
+        self,
+        *,
+        prompt: str,
+        required_keys: list[str] | None,
+    ) -> dict[str, Any] | None:
+        ttl_seconds = max(self.settings.llm_cache_ttl_seconds, 0)
+        if ttl_seconds <= 0:
+            return None
+        cache_key = self._build_cache_key(prompt=prompt, required_keys=required_keys)
+        current_time = time.time()
+        with self._llm_cache_lock:
+            cached_entry = self._llm_response_cache.get(cache_key)
+            if cached_entry is None:
+                return None
+            expires_at, payload = cached_entry
+            if expires_at <= current_time:
+                self._llm_response_cache.pop(cache_key, None)
+                return None
+        return deepcopy(payload)
+
+    def _store_cached_payload(
+        self,
+        *,
+        prompt: str,
+        required_keys: list[str] | None,
+        payload: dict[str, Any],
+    ) -> None:
+        ttl_seconds = max(self.settings.llm_cache_ttl_seconds, 0)
+        if ttl_seconds <= 0:
+            return
+        cache_key = self._build_cache_key(prompt=prompt, required_keys=required_keys)
+        with self._llm_cache_lock:
+            self._llm_response_cache[cache_key] = (time.time() + ttl_seconds, deepcopy(payload))
+            overflow = len(self._llm_response_cache) - max(self.settings.llm_cache_max_entries, 1)
+            if overflow > 0:
+                for key in sorted(self._llm_response_cache, key=lambda item: self._llm_response_cache[item][0])[:overflow]:
+                    self._llm_response_cache.pop(key, None)
+
+    def _build_cache_key(self, *, prompt: str, required_keys: list[str] | None) -> str:
+        return json.dumps(
+            {
+                "role": self.role,
+                "model": self._provider_model,
+                "temperature": self.temperature,
+                "enable_json_mode": self.enable_json_mode,
+                "required_keys": sorted(required_keys or []),
+                "prompt": prompt,
+            },
+            sort_keys=True,
+        )
+
     @staticmethod
     def _extract_json(raw: str) -> dict[str, Any]:
         text = raw.strip()
@@ -508,7 +567,7 @@ class BaseStructuredAgent:
             if isinstance(value, dict):
                 return value
             raise ValueError("JSON output is not an object.")
-        except Exception:
+        except json.JSONDecodeError:
             pass
 
         start = text.find("{")
@@ -522,12 +581,12 @@ class BaseStructuredAgent:
             if isinstance(value, dict):
                 return value
             raise ValueError("JSON output is not an object.")
-        except Exception:
+        except json.JSONDecodeError:
             try:
                 value = ast.literal_eval(chunk)
                 if isinstance(value, dict):
                     return value
-            except Exception:
+            except (SyntaxError, ValueError):
                 pass
         raise ValueError("Unable to parse JSON from agent output.")
 

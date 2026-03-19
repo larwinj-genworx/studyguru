@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ from src.schemas.study_material import (
 
 
 CONTENT_SCHEMA_VERSION = "v2"
+logger = logging.getLogger(__name__)
 
 
 def build_learning_content(
@@ -657,11 +659,12 @@ def _parse_structured_text(raw_text: str) -> Any | None:
         return None
     try:
         return json.loads(text)
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        logger.debug("Structured text was not valid JSON.", exc_info=True)
     try:
         return ast.literal_eval(text)
-    except Exception:
+    except (SyntaxError, ValueError):
+        logger.debug("Structured text was not a valid Python literal.", exc_info=True)
         return None
 
 

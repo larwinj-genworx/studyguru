@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 from src.schemas.learning_bot import LearningBotSessionStatus
 from src.schemas.quiz import QuizSessionStatus, QuizSessionType, QuizTopicPerformance
@@ -35,6 +35,8 @@ class MaterialLifecycleStatus(str, Enum):
 
 
 class ConceptCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=600)
     topic_order: int = Field(ge=1, le=500)
@@ -42,10 +44,14 @@ class ConceptCreate(BaseModel):
 
 
 class ConceptBulkCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concepts: list[ConceptCreate] = Field(min_length=1, max_length=50)
 
 
 class AdminConceptPlanItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_id: str | None = None
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=600)
@@ -53,36 +59,50 @@ class AdminConceptPlanItem(BaseModel):
 
 
 class AdminConceptPlanUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concepts: list[AdminConceptPlanItem] = Field(min_length=1, max_length=50)
 
 
 class SubjectCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     name: str = Field(min_length=2, max_length=120)
     grade_level: str = Field(min_length=1, max_length=40)
     description: str | None = Field(default=None, max_length=600)
 
 
 class AdminMaterialJobCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     subject_id: str
     concept_ids: list[str] = Field(min_length=1, max_length=30)
     learner_profile: str | None = Field(default=None, max_length=500)
 
 
 class AdminMaterialRegenerateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     learner_profile: str | None = Field(default=None, max_length=500)
     revision_note: str | None = Field(default=None, max_length=500)
 
 
 class AdminMaterialApproveRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_ids: list[str] | None = Field(default=None, max_length=30)
     approval_note: str | None = Field(default=None, max_length=500)
 
 
 class AdminMaterialPublishRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_ids: list[str] = Field(min_length=1, max_length=30)
 
 
 class StudentConceptSelection(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_ids: list[str] = Field(min_length=1, max_length=30)
 
 
@@ -139,6 +159,8 @@ class LearningContentResponse(BaseModel):
 
 
 class LearningContentUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     content: LearningContent
 
 
@@ -398,7 +420,9 @@ class AdminStudentActivityResponse(BaseModel):
 
 
 class VideoFeedbackRequest(BaseModel):
-    url: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: AnyHttpUrl
 
 
 LearningSection.model_rebuild()

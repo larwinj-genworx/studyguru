@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -16,12 +17,13 @@ from src.data.repositories import material_job_repository, study_material_reposi
 from src.schemas.study_material import ConceptResourcesResponse, ResourceItem, VideoFeedbackRequest
 
 _storage = get_object_storage_service()
+logger = logging.getLogger(__name__)
 
 
 def _is_youtube_url(url: str) -> bool:
     try:
         host = urlparse(url).hostname or ""
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return False
     return "youtube.com" in host or "youtu.be" in host
 
@@ -29,7 +31,7 @@ def _is_youtube_url(url: str) -> bool:
 def _extract_youtube_id(url: str) -> str | None:
     try:
         parsed = urlparse(url)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
     host = parsed.hostname or ""
     if "youtu.be" in host:
@@ -61,8 +63,12 @@ def _load_resources(path: Path, concept_id: str) -> tuple[list[ResourceItem], An
         return [], [], True
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return [], [], True
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.error("Failed to read stored concept resources.", exc_info=True, extra={"path": str(path)})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored concept resources could not be read.",
+        ) from exc
     if isinstance(payload, list):
         for entry in payload:
             if isinstance(entry, dict) and entry.get("concept_id") == concept_id:

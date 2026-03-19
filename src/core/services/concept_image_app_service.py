@@ -20,7 +20,7 @@ _settings = get_settings()
 _client = ConceptVisualMicroserviceClient(_settings)
 _storage = get_object_storage_service()
 _logger = logging.getLogger(__name__)
-_LOCAL_MICROSERVICE_OUTPUT_DIR = Path(__file__).resolve().parents[4] / "ConceptVisualBackend" / "output" / "concept_visuals"
+_LOCAL_MICROSERVICE_OUTPUT_DIR = _settings.concept_visual_local_output_dir
 
 
 async def get_admin_concept_images(

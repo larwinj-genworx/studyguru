@@ -19,10 +19,10 @@ from .models import EvidenceSnippet, SearchResult, SourceDocument, extract_domai
 
 try:
     from ddgs import DDGS
-except Exception:  # pragma: no cover - dependency is declared but keep runtime-safe
+except ImportError:  # pragma: no cover - dependency is declared but keep runtime-safe
     try:
         from duckduckgo_search import DDGS  # type: ignore[no-redef]
-    except Exception:
+    except ImportError:
         DDGS = None  # type: ignore[assignment]
 
 logger = logging.getLogger("uvicorn.error")
@@ -40,7 +40,7 @@ def _extract_literal_values(type_stub: str, alias_name: str) -> tuple[str, ...]:
 def _load_primp_impersonation_support() -> tuple[tuple[str, ...], tuple[str, ...]]:
     try:
         import primp
-    except Exception:
+    except ImportError:
         return (), ()
 
     stub_path = Path(primp.__file__).with_name("primp.pyi")
@@ -49,7 +49,7 @@ def _load_primp_impersonation_support() -> tuple[tuple[str, ...], tuple[str, ...
 
     try:
         stub_contents = stub_path.read_text(encoding="utf-8")
-    except Exception:
+    except OSError:
         return (), ()
 
     return (
@@ -64,7 +64,7 @@ def _configure_ddgs_impersonation_compatibility() -> None:
 
     try:
         from ddgs.http_client import HttpClient
-    except Exception:
+    except ImportError:
         return
 
     supported_profiles, supported_os = _load_primp_impersonation_support()
@@ -362,8 +362,8 @@ class EvidenceRetrievalService:
         for query in queries:
             try:
                 query_result = await asyncio.to_thread(self._search_single_query, query, max_results_per_query)
-            except Exception as exc:
-                logger.warning("[EvidenceRetrievalService] Search query failed for '%s': %s", query, exc)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.warning("[EvidenceRetrievalService] Search query failed for '%s'.", query, exc_info=True)
                 continue
             for item in query_result:
                 canonical = self._canonical_url(item.url)
@@ -387,8 +387,8 @@ class EvidenceRetrievalService:
                     max_results=requested_results,
                 )
             )
-        except Exception as exc:
-            logger.warning("[EvidenceRetrievalService] DDGS search failed for '%s': %s", query, exc)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("[EvidenceRetrievalService] DDGS search failed for '%s'.", query, exc_info=True)
             return []
 
         results: list[SearchResult] = []
@@ -675,8 +675,8 @@ class EvidenceRetrievalService:
             vectorizer = TfidfVectorizer(stop_words="english")
             matrix = vectorizer.fit_transform([query, *texts])
             scores = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
-        except Exception as exc:
-            logger.warning("[EvidenceRetrievalService] TF-IDF ranking failed: %s", exc)
+        except ValueError:
+            logger.warning("[EvidenceRetrievalService] TF-IDF ranking failed.", exc_info=True)
             scores = [0.0 for _ in texts]
 
         ranked: list[EvidenceSnippet] = []
@@ -954,7 +954,7 @@ class EvidenceRetrievalService:
     def _canonical_url(url: str) -> str:
         try:
             parsed = urlparse(url.strip())
-        except Exception:
+        except ValueError:
             return ""
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return ""
