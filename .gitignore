@@ -42,6 +42,7 @@ Temp/agentic_material/output/
 Temp/**/__pycache__/
 src/control/study_material_generation/output/
 output/study_material/
+output/concept_images/
 
 # FastAPI / Uvicorn reload artifacts
 *.pid

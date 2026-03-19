@@ -13,6 +13,8 @@ from src.control.study_material_generation.renderers.json_renderer import JsonRe
 from src.control.study_material_generation.renderers.pdf_renderer import PdfRenderer
 from src.control.study_material_generation.renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 from src.core.services import material_job_service
+from src.core.services.object_storage_service import get_object_storage_service
+from src.core.services.study_material_app_service import _safe_remove_job_outputs
 from src.data.repositories import material_job_repository, study_material_repository
 from src.schemas.study_material import (
     AdminMaterialApproveRequest,
@@ -27,6 +29,7 @@ from src.schemas.study_material import (
 logger = logging.getLogger("uvicorn.error")
 
 _settings = get_settings()
+_storage = get_object_storage_service()
 _workflow: MaterialWorkflow | None = None
 
 
@@ -121,8 +124,26 @@ async def approve_job(
     owner_id: str,
 ) -> MaterialJobStatusResponse:
     job = await _assert_job_owner(job_id, owner_id)
-    material_job_service.ensure_job_approvable(job)
+    if job.status != JobStatus.completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job is not completed yet.",
+        )
     job_concepts = await material_job_repository.get_job_concepts(job.id)
+    if job.review_status == ReviewStatus.approved:
+        job_concept_ids = [row.concept_id for row in job_concepts]
+        latest_materials = await study_material_repository.get_latest_materials(job_concept_ids)
+        pending = [
+            concept_id
+            for concept_id in job_concept_ids
+            if concept_id not in latest_materials
+            or latest_materials[concept_id].source_job_id != job.id
+        ]
+        if not pending:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This job is already approved.",
+            )
     job_concept_map = {row.concept_id: row for row in job_concepts}
 
     target_ids = payload.concept_ids or [row.concept_id for row in job_concepts]
@@ -172,9 +193,8 @@ async def approve_job(
             concept.material_version = next_version
         updated_concepts.append(concept)
 
-    job.review_status = ReviewStatus.approved
-    job.reviewer_note = payload.approval_note
-    job.reviewed_at = now
+    if payload.approval_note is not None:
+        job.reviewer_note = payload.approval_note
     job.updated_at = now
 
     if materials_to_create:
@@ -182,8 +202,80 @@ async def approve_job(
     if materials_to_update:
         await study_material_repository.update_materials(materials_to_update)
     await study_material_repository.update_concepts(updated_concepts)
+    job_concept_ids = [row.concept_id for row in job_concepts]
+    latest_materials = await study_material_repository.get_latest_materials(job_concept_ids)
+    all_approved = all(
+        (
+            latest_materials.get(concept_id)
+            and latest_materials[concept_id].lifecycle_status
+            in (MaterialLifecycleStatus.approved, MaterialLifecycleStatus.published)
+            and latest_materials[concept_id].source_job_id == job.id
+        )
+        for concept_id in job_concept_ids
+    )
+    if all_approved:
+        job.review_status = ReviewStatus.approved
+        job.reviewed_at = now
+    else:
+        job.review_status = ReviewStatus.pending_review
     await material_job_repository.update_job(job)
 
+    job_concepts = await material_job_repository.get_job_concepts(job.id)
+    return material_job_service.to_job_response(material_job_service.to_job_record(job, job_concepts))
+
+
+async def discard_job_concept(
+    job_id: str,
+    concept_id: str,
+    owner_id: str,
+) -> MaterialJobStatusResponse:
+    job = await _assert_job_owner(job_id, owner_id)
+    if job.status != JobStatus.completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job is not completed yet.",
+        )
+    job_concepts = await material_job_repository.get_job_concepts(job.id)
+    if not any(row.concept_id == concept_id for row in job_concepts):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Concept artifact not found in this job.",
+        )
+    latest_material = await study_material_repository.get_latest_material(concept_id)
+    if (
+        latest_material
+        and latest_material.source_job_id == job.id
+        and latest_material.lifecycle_status
+        in (MaterialLifecycleStatus.approved, MaterialLifecycleStatus.published)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete artifacts already approved from this job.",
+        )
+    await material_job_repository.delete_job_concepts(job.id, [concept_id])
+    await study_material_repository.delete_materials_for_job(job.id, [concept_id])
+    if job.output_dir:
+        settings = get_settings()
+        _safe_remove_job_outputs(
+            settings.material_output_dir / job.output_dir / "concepts",
+            [concept_id],
+        )
+        _storage.delete_prefix(
+            _storage.material_area,
+            f"{job.output_dir}/concepts/{concept_id}",
+        )
+    concept = await material_job_repository.get_concept(concept_id)
+    if concept:
+        latest_after_delete = await study_material_repository.get_latest_material(concept_id)
+        if latest_after_delete:
+            concept.material_status = latest_after_delete.lifecycle_status
+            concept.material_version = latest_after_delete.version
+        else:
+            concept.material_status = MaterialLifecycleStatus.unavailable
+            concept.material_version = 0
+        await study_material_repository.update_concepts([concept])
+    job.updated_at = datetime.now(timezone.utc)
+    await material_job_repository.update_job(job)
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     return material_job_service.to_job_response(material_job_service.to_job_record(job, job_concepts))
 
@@ -192,14 +284,14 @@ async def get_job_artifact_path(job_id: str, artifact_name: str, owner_id: str):
     job = await _assert_job_owner(job_id, owner_id)
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_job_artifact_path(record, artifact_name)
+    return material_job_service.resolve_job_artifact_relative_path(record, artifact_name)
 
 
 async def get_job_concept_artifact_path(job_id: str, concept_id: str, artifact_name: str, owner_id: str):
     job = await _assert_job_owner(job_id, owner_id)
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_concept_artifact_path(record, concept_id, artifact_name)
+    return material_job_service.resolve_concept_artifact_relative_path(record, concept_id, artifact_name)
 
 
 async def get_published_concept_artifact_path(subject_id: str, concept_id: str, artifact_name: str):
@@ -214,7 +306,11 @@ async def get_published_concept_artifact_path(subject_id: str, concept_id: str, 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_published_concept_artifact_path(record, concept_id, artifact_name)
+    return material_job_service.resolve_published_concept_artifact_relative_path(
+        record,
+        concept_id,
+        artifact_name,
+    )
 
 
 async def get_published_subject_artifact_path(subject_id: str, artifact_name: str):
@@ -244,7 +340,7 @@ async def get_published_subject_artifact_path(subject_id: str, artifact_name: st
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Material job not found.")
     job_concepts = await material_job_repository.get_job_concepts(job.id)
     record = material_job_service.to_job_record(job, job_concepts)
-    return material_job_service.resolve_published_subject_artifact_path(record, artifact_name)
+    return material_job_service.resolve_published_subject_artifact_relative_path(record, artifact_name)
 
 
 async def _run_job(job_id: str) -> None:

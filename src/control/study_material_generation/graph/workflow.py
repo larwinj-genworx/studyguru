@@ -10,17 +10,73 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from langgraph.graph import END, START, StateGraph
 
 from ..agents import AgentRegistry
-from ..agents.resource_finder_agent import ResourceUnavailableError
 from src.config.settings import Settings
+from src.schemas.quiz import QuizQuestionSourceType
 from src.schemas.study_material import ArtifactIndex, ConceptContentPack, JobStatus, MaterialLifecycleStatus
-from src.data.models.postgres.models import ConceptMaterial
-from src.core.services import learning_content_service
-from src.data.repositories import workflow_repository, study_material_repository
+from src.data.models.postgres.models import ConceptMaterial, QuizQuestion
+from src.core.services import learning_content_service, quiz_service
+from src.core.services.object_storage_service import get_object_storage_service
+from src.data.repositories import workflow_repository, study_material_repository, quiz_repository
 from ..renderers.json_renderer import JsonRenderer
 from ..renderers.pdf_renderer import PdfRenderer
 from ..renderers.study_material_json_renderer import StudyMaterialJsonRenderer
 
 logger = logging.getLogger("uvicorn.error")
+_storage = get_object_storage_service()
+
+
+def _build_topic_assessment_questions(
+    *,
+    subject_id: str,
+    concept_id: str,
+    concept_name: str,
+    material_version: int,
+    concept_pack: ConceptContentPack | None,
+) -> list[QuizQuestion]:
+    if not concept_pack:
+        return []
+    questions: list[QuizQuestion] = []
+    for item in concept_pack.mcqs:
+        if not isinstance(item, dict):
+            continue
+        question_text = str(item.get("question", "")).strip()
+        if len(question_text) < 10:
+            continue
+        options = [str(opt).strip() for opt in item.get("options", []) if str(opt).strip()]
+        options = list(dict.fromkeys(options))
+        if len(options) != 4:
+            continue
+        answer = str(item.get("answer", "")).strip()
+        if answer not in options:
+            normalized = {opt.lower(): opt for opt in options}
+            if answer.lower() not in normalized:
+                continue
+            answer = normalized[answer.lower()]
+        hints = [str(hint).strip() for hint in item.get("hints", []) if str(hint).strip()]
+        explanation = str(item.get("explanation", "")).strip() or None
+        difficulty = str(item.get("difficulty", "medium")).strip().lower()
+        if difficulty not in {"easy", "medium", "hard"}:
+            difficulty = "medium"
+        questions.append(
+            QuizQuestion(
+                subject_id=subject_id,
+                concept_id=concept_id,
+                material_version=material_version,
+                question=question_text,
+                options=options,
+                correct_option=answer,
+                hints=quiz_service.sanitize_hints(
+                    hints=hints,
+                    answer=answer,
+                    concept_name=concept_name,
+                    question=question_text,
+                ),
+                explanation=explanation,
+                difficulty=difficulty,
+                source_type=QuizQuestionSourceType.topic_assessment,
+            )
+        )
+    return questions
 
 
 class MaterialWorkflow:
@@ -70,23 +126,16 @@ class MaterialWorkflow:
 
         graph.add_edge(START, "validate_request_node")
         graph.add_edge("validate_request_node", "load_subject_and_concepts_node")
-        graph.add_edge("load_subject_and_concepts_node", "syllabus_interpreter_node")
+        graph.add_edge("load_subject_and_concepts_node", "resource_finder_node")
+        graph.add_edge("resource_finder_node", "syllabus_interpreter_node")
         graph.add_edge("syllabus_interpreter_node", "student_pedagogy_node")
         graph.add_edge("student_pedagogy_node", "study_material_engine_node")
         graph.add_edge("study_material_engine_node", "concept_explainer_node")
         graph.add_edge("concept_explainer_node", "formula_explainer_node")
         graph.add_edge("formula_explainer_node", "worked_example_node")
         graph.add_edge("worked_example_node", "practice_recall_node")
-        graph.add_edge("practice_recall_node", "resource_finder_node")
-        graph.add_edge("resource_finder_node", "quality_guardian_node")
-        graph.add_conditional_edges(
-            "quality_guardian_node",
-            self._quality_route,
-            {
-                "revise": "concept_explainer_node",
-                "continue": "artifact_spec_node",
-            },
-        )
+        graph.add_edge("practice_recall_node", "quality_guardian_node")
+        graph.add_edge("quality_guardian_node", "artifact_spec_node")
         graph.add_edge("artifact_spec_node", "artifact_render_node")
         graph.add_edge("artifact_render_node", "zip_bundle_node")
         graph.add_edge("zip_bundle_node", "persist_job_output_node")
@@ -126,6 +175,9 @@ class MaterialWorkflow:
                 "concept_name": concept["name"],
                 "concept_description": concept.get("description"),
                 "revision_feedback": job.revision_note,
+                "requires_revision": False,
+                "revision_attempts": 0,
+                "last_blocking_issue_signature": "",
             }
         await self._update_job(job.job_id, progress=12)
         return {
@@ -150,12 +202,13 @@ class MaterialWorkflow:
                 concept_name=item["concept_name"],
                 concept_description=item.get("concept_description"),
                 learner_profile=job.learner_profile,
+                evidence_pack=item.get("evidence_pack"),
             )
             item["coverage_map"] = coverage_map
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=22)
+        await self._update_job(job.job_id, progress=28)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -177,12 +230,12 @@ class MaterialWorkflow:
                 grade_level=subject["grade_level"],
                 coverage_map=item.get("coverage_map", {}),
                 learner_profile=job.learner_profile,
+                evidence_pack=item.get("evidence_pack"),
             )
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        print("Updated concept states after pedagogy planning:", updated)
-        await self._update_job(job.job_id, progress=34)
+        await self._update_job(job.job_id, progress=36)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -211,8 +264,12 @@ class MaterialWorkflow:
                     concept_name=item["concept_name"],
                     level=subject["grade_level"],
                     auto_revision_enabled=auto_revision_enabled,
+                    coverage_map=item.get("coverage_map", {}),
+                    teaching_plan=item.get("teaching_plan", {}),
+                    revision_feedback=item.get("revision_feedback"),
+                    evidence_pack=item.get("evidence_pack"),
                 )
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 item["engine_output_error"] = str(exc)
                 logger.warning(
                     "[MaterialJob:%s] Study material engine failed for concept '%s': %s",
@@ -223,7 +280,7 @@ class MaterialWorkflow:
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=40)
+        await self._update_job(job.job_id, progress=46)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -238,6 +295,8 @@ class MaterialWorkflow:
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            if self._should_skip_revision_pass(state, item):
+                return item
             await self._set_concept_status(job.job_id, item["concept_id"], "concept_explaining", item["concept_name"])
             item["core_notes"] = await asyncio.to_thread(
                 self.agents.concept_explainer.execute,
@@ -246,11 +305,12 @@ class MaterialWorkflow:
                 coverage_map=item.get("coverage_map", {}),
                 teaching_plan=item.get("teaching_plan", {}),
                 revision_feedback=item.get("revision_feedback"),
+                evidence_pack=item.get("evidence_pack"),
             )
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=45)
+        await self._update_job(job.job_id, progress=54)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -265,6 +325,8 @@ class MaterialWorkflow:
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            if self._should_skip_revision_pass(state, item):
+                return item
             await self._set_concept_status(job.job_id, item["concept_id"], "formula_explaining", item["concept_name"])
             core = item.get("core_notes", {})
             formula_payload = await asyncio.to_thread(
@@ -272,12 +334,13 @@ class MaterialWorkflow:
                 concept_name=item["concept_name"],
                 grade_level=subject["grade_level"],
                 formulas=core.get("formulas", []),
+                evidence_pack=item.get("evidence_pack"),
             )
             item["formula_cards"] = formula_payload.get("formula_cards", [])
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=50)
+        await self._update_job(job.job_id, progress=60)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
@@ -291,19 +354,25 @@ class MaterialWorkflow:
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            if self._should_skip_revision_pass(state, item):
+                return item
             await self._set_concept_status(job.job_id, item["concept_id"], "example_generation", item["concept_name"])
             core = item.get("core_notes", {})
             item["examples_pack"] = await asyncio.to_thread(
                 self.agents.worked_example.execute,
+                subject_name=state["subject_record"]["name"],
                 concept_name=item["concept_name"],
+                grade_level=state["subject_record"]["grade_level"],
                 key_steps=core.get("key_steps", []),
+                formulas=core.get("formulas", []),
                 revision_feedback=item.get("revision_feedback"),
                 practical_examples_required=bool(core.get("practical_examples_required", True)),
+                evidence_pack=item.get("evidence_pack"),
             )
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=55)
+        await self._update_job(job.job_id, progress=68)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -317,6 +386,8 @@ class MaterialWorkflow:
         concept_states = state["concept_states"]
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
+            if self._should_skip_revision_pass(state, item):
+                return item
             await self._set_concept_status(job.job_id, item["concept_id"], "practice_generation", item["concept_name"])
             core = item.get("core_notes", {})
             examples = item.get("examples_pack", {}).get("examples", [])
@@ -324,13 +395,19 @@ class MaterialWorkflow:
                 self.agents.practice_recall.execute,
                 concept_name=item["concept_name"],
                 definition=core.get("definition", ""),
+                intuition=core.get("intuition", ""),
+                key_steps=core.get("key_steps", []),
+                common_mistakes=core.get("common_mistakes", []),
+                recap=core.get("recap", []),
+                formulas=core.get("formulas", []),
                 examples=examples,
                 revision_feedback=item.get("revision_feedback"),
+                evidence_pack=item.get("evidence_pack"),
             )
             return item
 
         updated = await self._map_concepts(concept_states, _run)
-        await self._update_job(job.job_id, progress=64)
+        await self._update_job(job.job_id, progress=76)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -346,114 +423,128 @@ class MaterialWorkflow:
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
             await self._set_concept_status(job.job_id, item["concept_id"], "resource_curation", item["concept_name"])
-            try:
-                item["resource_pack"] = await self.agents.resource_finder.execute(
-                    subject_name=subject["name"],
-                    grade_level=subject["grade_level"],
-                    concept_name=item["concept_name"],
-                )
-                item["resource_required"] = True
-                return item
-            except ResourceUnavailableError as exc:
-                await self._set_concept_status(
-                    job.job_id,
-                    item["concept_id"],
-                    "resource_unavailable_skipped",
-                    item["concept_name"],
-                )
-                item["skip_reason"] = str(exc)
-                item["skip"] = True
-                item["resource_required"] = False
-                logger.warning(
-                    "[MaterialJob:%s] Skipping concept '%s' (%s) due to missing resources.",
-                    job.job_id,
-                    item["concept_name"],
-                    item["concept_id"],
-                )
-                return item
+            evidence_pack = await self.agents.resource_finder.execute(
+                subject_name=subject["name"],
+                grade_level=subject["grade_level"],
+                concept_name=item["concept_name"],
+                concept_description=item.get("concept_description"),
+            )
+            item["evidence_pack"] = evidence_pack
+            item["resource_pack"] = {
+                "references": evidence_pack.get("references", []),
+            }
+            item["resource_required"] = bool(evidence_pack.get("resource_required"))
+            logger.info(
+                (
+                    "[MaterialJob:%s] Resource scraping completed for concept '%s' (%s). "
+                    "retrieval_status=%s sources=%d snippets=%d references=%d"
+                ),
+                job.job_id,
+                item["concept_name"],
+                item["concept_id"],
+                evidence_pack.get("retrieval_status", "unknown"),
+                len(evidence_pack.get("source_documents", []) or []),
+                len(evidence_pack.get("evidence_snippets", []) or []),
+                len(evidence_pack.get("references", []) or []),
+            )
+            return item
 
         updated = await self._map_concepts(concept_states, _run)
-        kept = {cid: data for cid, data in updated.items() if not data.get("skip")}
-        if not kept:
-            if self.settings.allow_resourceless_generation:
+        for concept_id, data in updated.items():
+            retrieval_status = str(data.get("evidence_pack", {}).get("retrieval_status", "fallback")).strip()
+            if retrieval_status != "grounded":
                 logger.warning(
-                    "[MaterialJob:%s] No external resources found for any concept; continuing without resources.",
+                    "[MaterialJob:%s] Evidence retrieval is %s for concept '%s' (%s).",
                     job.job_id,
+                    retrieval_status,
+                    data.get("concept_name", concept_id),
+                    concept_id,
                 )
-                for concept_id, data in updated.items():
-                    data["skip"] = False
-                    data["resource_required"] = False
-                    data["resource_pack"] = {"references": []}
-                    await self._set_concept_status(
-                        job.job_id,
-                        concept_id,
-                        "resource_unavailable_continued",
-                        data.get("concept_name", concept_id),
-                    )
-                kept = updated
-            else:
-                raise RuntimeError(
-                    "All concepts were skipped due to missing external resources. "
-                    "Generation cannot continue."
-                )
-        await self._update_job(job.job_id, progress=72)
+        await self._update_job(job.job_id, progress=20)
         return {
             "job_id": state["job_id"],
             "subject_record": subject,
-            "concept_states": kept,
+            "concept_states": updated,
             "revision_cycle": state.get("revision_cycle", 0),
             "max_revision_cycles": state.get("max_revision_cycles", self.settings.max_revision_cycles),
         }
 
     async def quality_guardian_node(self, state: dict[str, Any]) -> dict[str, Any]:
         job = await workflow_repository.get_job(state["job_id"])
+        subject = state["subject_record"]
         concept_states = state["concept_states"]
-        revision_targets: dict[str, str] = {}
+        max_cycles = int(state.get("max_revision_cycles", 2))
 
         async def _run(item: dict[str, Any]) -> dict[str, Any]:
-            await self._set_concept_status(job.job_id, item["concept_id"], "quality_review", item["concept_name"])
-            core = item.get("core_notes", {})
-            draft = {
-                **core,
-                **item.get("examples_pack", {}),
-                **item.get("practice_pack", {}),
-                **item.get("resource_pack", {}),
-            }
-            quality_report = await asyncio.to_thread(
-                self.agents.quality_guardian.execute,
-                concept_name=item["concept_name"],
-                content=draft,
-                resource_required=item.get("resource_required", True),
+            quality_report, blocking_issues, blocking_signature = await self._evaluate_quality_report(
+                job_id=job.job_id,
+                item=item,
             )
+            previous_signature = str(item.get("last_blocking_issue_signature", "")).strip()
+            item["last_blocking_issue_signature"] = blocking_signature
+
+            if not blocking_issues:
+                item["requires_revision"] = False
+                item["revision_feedback"] = None
+                item["quality_status"] = "approved"
+                return item
+
+            feedback = self._compose_revision_feedback(quality_report, blocking_issues)
+            revision_attempts = int(item.get("revision_attempts", 0))
+            auto_revisable = any(self._is_auto_revisable_blocker(issue) for issue in blocking_issues)
+
+            while (
+                auto_revisable
+                and feedback
+                and revision_attempts < max_cycles
+                and blocking_signature != previous_signature
+            ):
+                item["revision_feedback"] = feedback
+                item["revision_attempts"] = revision_attempts + 1
+                logger.info(
+                    "[MaterialJob:%s] Targeted quality revision started for concept '%s' (%s). blockers=%s",
+                    job.job_id,
+                    item["concept_name"],
+                    item["concept_id"],
+                    "; ".join(blocking_issues[:4]),
+                )
+                item = await self._run_targeted_quality_revision(
+                    job_id=job.job_id,
+                    subject=subject,
+                    item=item,
+                )
+                previous_signature = blocking_signature
+                revision_attempts = int(item.get("revision_attempts", 0))
+                quality_report, blocking_issues, blocking_signature = await self._evaluate_quality_report(
+                    job_id=job.job_id,
+                    item=item,
+                )
+                item["last_blocking_issue_signature"] = blocking_signature
+                if not blocking_issues:
+                    item["requires_revision"] = False
+                    item["revision_feedback"] = None
+                    item["quality_status"] = "approved"
+                    return item
+                feedback = self._compose_revision_feedback(quality_report, blocking_issues)
+                auto_revisable = any(self._is_auto_revisable_blocker(issue) for issue in blocking_issues)
+
+            quality_report["approved"] = True
+            quality_report["unresolved_issues"] = blocking_issues[:10]
+            quality_report["approval_mode"] = "manual_review_recommended"
             item["quality_report"] = quality_report
-            if not quality_report.get("approved", False):
-                feedback = "; ".join(
-                    [
-                        *quality_report.get("issues", []),
-                        *quality_report.get("guidance", []),
-                    ]
-                ).strip()
-                if feedback:
-                    revision_targets[item["concept_id"]] = feedback
-                    item["revision_feedback"] = feedback
+            item["requires_revision"] = False
+            item["quality_status"] = "approved_with_warnings"
+            logger.warning(
+                "[MaterialJob:%s] Proceeding with best-effort output for concept '%s' after unresolved quality blockers: %s",
+                job.job_id,
+                item.get("concept_name", item["concept_id"]),
+                "; ".join(blocking_issues[:4]),
+            )
             return item
 
         updated = await self._map_concepts(concept_states, _run)
         revision_cycle = int(state.get("revision_cycle", 0))
-        max_cycles = int(state.get("max_revision_cycles", 2))
-
-        if revision_targets and revision_cycle < max_cycles:
-            await self._update_job(job.job_id, progress=min(78, job.progress + 4))
-            return {
-                "job_id": state["job_id"],
-                "subject_record": state["subject_record"],
-                "concept_states": updated,
-                "needs_revision": True,
-                "revision_cycle": revision_cycle + 1,
-                "max_revision_cycles": max_cycles,
-            }
-
-        await self._update_job(job.job_id, progress=80)
+        await self._update_job(job.job_id, progress=84)
         return {
             "job_id": state["job_id"],
             "subject_record": state["subject_record"],
@@ -664,13 +755,22 @@ class MaterialWorkflow:
             for concept_id, artifact_map in concept_artifacts.items()
         }
 
+        output_dir = state.get("output_dir")
+        if output_dir:
+            await asyncio.to_thread(
+                _storage.upload_local_directory,
+                _storage.material_area,
+                Path(output_dir),
+                local_root=self.settings.material_output_dir,
+            )
+
         concept_ids = list(concept_states.keys())
         concept_pack_map: dict[str, ConceptContentPack] = {}
         for pack in state.get("concept_packs", []):
             try:
                 concept_pack = ConceptContentPack(**pack)
                 concept_pack_map[concept_pack.concept_id] = concept_pack
-            except Exception:
+            except (TypeError, ValueError):
                 continue
 
         latest_materials = await study_material_repository.get_latest_materials(concept_ids)
@@ -682,6 +782,8 @@ class MaterialWorkflow:
         new_materials: list[ConceptMaterial] = []
         updated_materials: list[ConceptMaterial] = []
         updated_concepts = []
+        material_version_by_concept: dict[str, int] = {}
+        assessment_question_map: dict[str, list[QuizQuestion]] = {}
 
         for concept_id in concept_ids:
             concept_pack = concept_pack_map.get(concept_id)
@@ -745,6 +847,14 @@ class MaterialWorkflow:
                 concept_model.material_status = MaterialLifecycleStatus.draft
                 concept_model.material_version = material_version
                 updated_concepts.append(concept_model)
+            material_version_by_concept[concept_id] = material_version
+            assessment_question_map[concept_id] = _build_topic_assessment_questions(
+                subject_id=subject_record["subject_id"],
+                concept_id=concept_id,
+                concept_name=concept_name_by_id.get(concept_id, concept_id),
+                material_version=material_version,
+                concept_pack=concept_pack,
+            )
 
         if new_materials:
             await study_material_repository.create_concept_materials(new_materials)
@@ -752,8 +862,14 @@ class MaterialWorkflow:
             await study_material_repository.update_materials(updated_materials)
         if updated_concepts:
             await study_material_repository.update_concepts(updated_concepts)
+        for concept_id, questions in assessment_question_map.items():
+            await quiz_repository.replace_questions_for_concept_version(
+                concept_id=concept_id,
+                material_version=material_version_by_concept[concept_id],
+                source_type=QuizQuestionSourceType.topic_assessment,
+                questions=questions,
+            )
 
-        output_dir = state.get("output_dir")
         job.output_dir = Path(output_dir).name if output_dir else None
         job.progress = 98
         for concept_id in concept_states.keys():
@@ -798,6 +914,111 @@ class MaterialWorkflow:
             return "revise"
         return "continue"
 
+    @staticmethod
+    def _should_skip_revision_pass(state: dict[str, Any], item: dict[str, Any]) -> bool:
+        return int(state.get("revision_cycle", 0)) > 0 and not bool(item.get("requires_revision"))
+
+    @staticmethod
+    def _issue_signature(issues: list[str]) -> str:
+        normalized = sorted({str(issue).strip().lower() for issue in issues if str(issue).strip()})
+        return "|".join(normalized)
+
+    async def _evaluate_quality_report(
+        self,
+        *,
+        job_id: str,
+        item: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str], str]:
+        await self._set_concept_status(job_id, item["concept_id"], "quality_review", item["concept_name"])
+        core = item.get("core_notes", {})
+        draft = {
+            **core,
+            **item.get("examples_pack", {}),
+            **item.get("practice_pack", {}),
+            **item.get("resource_pack", {}),
+        }
+        quality_report = await asyncio.to_thread(
+            self.agents.quality_guardian.execute,
+            concept_name=item["concept_name"],
+            content=draft,
+            resource_required=item.get("resource_required", True),
+            evidence_pack=item.get("evidence_pack"),
+        )
+        item["quality_report"] = quality_report
+        blocking_issues = [
+            str(issue).strip()
+            for issue in quality_report.get("blocking_issues", quality_report.get("issues", []))
+            if str(issue).strip()
+        ]
+        return quality_report, blocking_issues, self._issue_signature(blocking_issues)
+
+    async def _run_targeted_quality_revision(
+        self,
+        *,
+        job_id: str,
+        subject: dict[str, Any],
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._set_concept_status(job_id, item["concept_id"], "quality_revision", item["concept_name"])
+        item["core_notes"] = await asyncio.to_thread(
+            self.agents.concept_explainer.execute,
+            concept_name=item["concept_name"],
+            grade_level=subject["grade_level"],
+            coverage_map=item.get("coverage_map", {}),
+            teaching_plan=item.get("teaching_plan", {}),
+            revision_feedback=item.get("revision_feedback"),
+            evidence_pack=item.get("evidence_pack"),
+        )
+        core = item.get("core_notes", {})
+        formula_payload = await asyncio.to_thread(
+            self.agents.formula_explainer.execute,
+            concept_name=item["concept_name"],
+            grade_level=subject["grade_level"],
+            formulas=core.get("formulas", []),
+            evidence_pack=item.get("evidence_pack"),
+        )
+        item["formula_cards"] = formula_payload.get("formula_cards", [])
+        item["examples_pack"] = await asyncio.to_thread(
+            self.agents.worked_example.execute,
+            subject_name=subject["name"],
+            concept_name=item["concept_name"],
+            grade_level=subject["grade_level"],
+            key_steps=core.get("key_steps", []),
+            formulas=core.get("formulas", []),
+            revision_feedback=item.get("revision_feedback"),
+            practical_examples_required=bool(core.get("practical_examples_required", True)),
+            evidence_pack=item.get("evidence_pack"),
+        )
+        item["practice_pack"] = await asyncio.to_thread(
+            self.agents.practice_recall.execute,
+            concept_name=item["concept_name"],
+            definition=core.get("definition", ""),
+            intuition=core.get("intuition", ""),
+            key_steps=core.get("key_steps", []),
+            common_mistakes=core.get("common_mistakes", []),
+            recap=core.get("recap", []),
+            formulas=core.get("formulas", []),
+            examples=item.get("examples_pack", {}).get("examples", []),
+            revision_feedback=item.get("revision_feedback"),
+            evidence_pack=item.get("evidence_pack"),
+        )
+        return item
+
+    @staticmethod
+    def _compose_revision_feedback(quality_report: dict[str, Any], blocking_issues: list[str]) -> str:
+        guidance = [str(item).strip() for item in quality_report.get("guidance", []) if str(item).strip()]
+        return "; ".join([*blocking_issues, *guidance]).strip()
+
+    @staticmethod
+    def _is_auto_revisable_blocker(issue: str) -> bool:
+        normalized = str(issue).strip().lower()
+        return normalized in {
+            "need at least 3 practical examples.",
+            "practical examples need worked derivations or calculations for this concept.",
+            "need at least 6 mcqs.",
+            "need at least 8 flashcards.",
+        }
+
     async def _map_concepts(
         self,
         concept_states: dict[str, dict[str, Any]],
@@ -821,7 +1042,7 @@ class MaterialWorkflow:
                 concept_copy = dict(concept)
                 node_timeout = max(self.settings.request_timeout_seconds * 2, 20)
                 return await asyncio.wait_for(task_callback(concept_copy), timeout=node_timeout)
-            except Exception as exc:
+            except (asyncio.TimeoutError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 last_exc = exc
                 if attempt < attempts:
                     await asyncio.sleep(min(2**(attempt - 1), 4))

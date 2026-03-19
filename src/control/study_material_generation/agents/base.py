@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import json
 import logging
 import os
@@ -13,22 +14,24 @@ from typing import Any
 from src.config.settings import Settings
 
 try:
-    from crewai import Agent, Crew, Process, Task
-except Exception:  # pragma: no cover - optional runtime dependency
-    Agent = Crew = Process = Task = None  # type: ignore[assignment]
-
-try:
-    import litellm  # type: ignore
+    import litellm  
 
     LITELLM_AVAILABLE = True
-except Exception:  # pragma: no cover - optional runtime dependency
-    litellm = None  # type: ignore
+except ImportError:
+    litellm = None  
     LITELLM_AVAILABLE = False
 
 try:
+    from langchain_core.output_parsers import JsonOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+except ImportError:
+    JsonOutputParser = None 
+    ChatPromptTemplate = None 
+
+try:
     from langchain_groq import ChatGroq
-except Exception:  # pragma: no cover - optional runtime dependency
-    ChatGroq = None  # type: ignore[assignment]
+except ImportError:
+    ChatGroq = None 
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -37,6 +40,8 @@ class BaseStructuredAgent:
     _llm_semaphore_lock = threading.Lock()
     _llm_semaphore: threading.BoundedSemaphore | None = None
     _llm_semaphore_size: int | None = None
+    _llm_cache_lock = threading.Lock()
+    _llm_response_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def __init__(
         self,
@@ -46,21 +51,23 @@ class BaseStructuredAgent:
         goal: str,
         backstory: str,
         temperature: float = 0.2,
+        enable_json_mode: bool = True,
     ) -> None:
         self.settings = settings
         self.role = role
         self.goal = goal
         self.backstory = backstory
         self.temperature = temperature
+        self.enable_json_mode = enable_json_mode
         self._chat_llm = None
         self._chat_llm_json = None
         self._chat_llm_json_disabled = False
-        self._crewai_model = self._normalize_crewai_model(settings.groq_model)
-        self._crewai_disabled = False
-        self._crewai_enabled = settings.enable_crewai_execution
+        self._provider_model = self._normalize_provider_model(settings.groq_model)
+        self._json_prompt = None
+        self._json_parser = None
         self._last_llm_error: str | None = None
         if settings.groq_api:
-            # CrewAI/LiteLLM expects provider-specific env key for Groq.
+            # LiteLLM expects provider-specific env key for Groq.
             os.environ["GROQ_API_KEY"] = settings.groq_api
             os.environ.setdefault("GROQ_API", settings.groq_api)
         if ChatGroq and settings.groq_api:
@@ -88,23 +95,26 @@ class BaseStructuredAgent:
         expected_output: str = "Strict JSON only.",
         required_keys: list[str] | None = None,
     ) -> dict[str, Any]:
+        self._last_llm_error = None
+        cached = self._get_cached_payload(prompt=prompt, required_keys=required_keys)
+        if cached is not None:
+            return cached
         failures: list[str] = []
         retries = max(self.settings.agent_retry_attempts, 1)
         for attempt in range(1, retries + 1):
             try:
                 with self._acquire_llm_slot():
-                    result = self._run_with_chat_json(prompt)
+                    result = self._run_with_chat_json(prompt) if self.enable_json_mode else None
                     if result is None:
                         result = self._run_with_chat(prompt)
-                    if result is None:
-                        result = self._run_with_crewai(prompt=prompt, expected_output=expected_output)
                     if result is None:
                         result = self._run_with_litellm(prompt=prompt)
                 if result is None:
                     raise ValueError("No JSON output returned by model path.")
                 self._validate_required_keys(result, required_keys)
+                self._store_cached_payload(prompt=prompt, required_keys=required_keys, payload=result)
                 return result
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 failures.append(f"attempt {attempt}: {exc}")
                 # If no model path produced any payload at all, waiting for more retries
                 # usually adds delay without improving output.
@@ -127,40 +137,6 @@ class BaseStructuredAgent:
             failures.append(self._diagnose_missing_llm_paths())
         raise ValueError(f"{self.role} failed to produce valid structured output. {' | '.join(failures)}")
 
-    def _run_with_crewai(self, *, prompt: str, expected_output: str) -> dict[str, Any] | None:
-        if not self._crewai_enabled:
-            return None
-        if self._crewai_disabled:
-            return None
-        if not LITELLM_AVAILABLE:
-            return None
-        if not self._crewai_model or not Agent or not Crew or not Task or not Process:
-            return None
-        try:
-            agent = Agent(
-                role=self.role,
-                goal=self.goal,
-                backstory=self.backstory,
-                llm=self._crewai_model,
-                verbose=False,
-                allow_delegation=False,
-            )
-            task = Task(
-                description=f"{prompt}\nReturn JSON only without markdown fences.",
-                expected_output=expected_output,
-                agent=agent,
-            )
-            crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
-            output = crew.kickoff()
-            raw = getattr(output, "raw", str(output))
-            return self._extract_json(raw)
-        except Exception as exc:
-            # Disable repeated failing CrewAI path and use Groq direct fallback.
-            self._crewai_disabled = True
-            self._last_llm_error = f"CrewAI execution failed: {exc}"
-            logger.warning("[AgentLLM:%s] CrewAI execution failed: %s", self.role, exc)
-            return None
-
     def _run_with_chat(self, prompt: str) -> dict[str, Any] | None:
         if not self._chat_llm:
             if self.settings.groq_api and ChatGroq is None:
@@ -178,29 +154,46 @@ class BaseStructuredAgent:
                 content = str(content)
             try:
                 return self._extract_json(content)
-            except Exception as exc:
+            except ValueError as exc:
                 snippet = content.replace("\n", " ").strip()
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
                 self._last_llm_error = f"ChatGroq produced non-JSON output: {exc}"
-                logger.warning(
+                logger.info(
                     "[AgentLLM:%s] ChatGroq returned non-JSON output (snippet): %s",
                     self.role,
                     snippet,
                 )
                 return None
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._last_llm_error = f"ChatGroq request failed: {exc}"
-            logger.warning("[AgentLLM:%s] ChatGroq request failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] ChatGroq request failed; trying fallback path: %s", self.role, exc)
             return None
 
     def _run_with_chat_json(self, prompt: str) -> dict[str, Any] | None:
         if not self._chat_llm_json or self._chat_llm_json_disabled:
             return None
         try:
-            response = self._chat_llm_json.invoke(
-                f"{prompt}\n\nReturn only strict JSON. Do not include any extra text."
-            )
+            prompt_template = None
+            if ChatPromptTemplate is not None:
+                if self._json_prompt is None:
+                    self._json_prompt = ChatPromptTemplate.from_messages(
+                        [
+                            (
+                                "user",
+                                "{prompt}\n\nReturn only strict JSON. Do not include any extra text.",
+                            )
+                        ]
+                    )
+                prompt_template = self._json_prompt
+
+            if prompt_template is not None:
+                messages = prompt_template.format_messages(prompt=prompt)
+                response = self._chat_llm_json.invoke(messages)
+            else:
+                response = self._chat_llm_json.invoke(
+                    f"{prompt}\n\nReturn only strict JSON. Do not include any extra text."
+                )
             content = getattr(response, "content", None)
             if isinstance(content, list):
                 content = "".join(
@@ -210,24 +203,37 @@ class BaseStructuredAgent:
             if not isinstance(content, str):
                 content = str(content)
             try:
+                parse_error: Exception | None = None
+                if JsonOutputParser is not None:
+                    try:
+                        if self._json_parser is None:
+                            self._json_parser = JsonOutputParser()
+                        parsed = self._json_parser.parse(content)
+                        if isinstance(parsed, dict):
+                            return parsed
+                        raise ValueError("Parsed JSON output is not an object.")
+                    except ValueError as exc:
+                        parse_error = exc
                 return self._extract_json(content)
-            except Exception as exc:
+            except ValueError as exc:
+                if parse_error is not None:
+                    exc = ValueError(f"{parse_error}; {exc}")
                 snippet = content.replace("\n", " ").strip()
                 if len(snippet) > 500:
                     snippet = f"{snippet[:500]}..."
                 self._last_llm_error = f"ChatGroq JSON-mode produced non-JSON output: {exc}"
-                logger.warning(
+                logger.info(
                     "[AgentLLM:%s] ChatGroq JSON-mode returned non-JSON output (snippet): %s",
                     self.role,
                     snippet,
                 )
                 return None
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             message = str(exc)
             if "response_format" in message or "json_object" in message:
                 self._chat_llm_json_disabled = True
             self._last_llm_error = f"ChatGroq JSON-mode request failed: {exc}"
-            logger.warning("[AgentLLM:%s] ChatGroq JSON-mode failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] ChatGroq JSON-mode failed; trying fallback path: %s", self.role, exc)
             return None
 
     def _run_with_litellm(self, prompt: str) -> dict[str, Any] | None:
@@ -235,7 +241,7 @@ class BaseStructuredAgent:
             return None
         try:
             response = litellm.completion(
-                model=self._crewai_model,
+                model=self._provider_model,
                 messages=[
                     {"role": "system", "content": "Return JSON only without markdown fences."},
                     {"role": "user", "content": prompt},
@@ -261,9 +267,9 @@ class BaseStructuredAgent:
             if content is None:
                 raise ValueError("LiteLLM returned empty content.")
             return self._extract_json(str(content))
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._last_llm_error = f"LiteLLM request failed: {exc}"
-            logger.warning("[AgentLLM:%s] LiteLLM request failed: %s", self.role, exc)
+            logger.info("[AgentLLM:%s] LiteLLM request failed: %s", self.role, exc)
             return None
 
     def _build_fallback_payload(self, *, prompt: str, required_keys: list[str] | None) -> dict[str, Any] | None:
@@ -403,35 +409,51 @@ class BaseStructuredAgent:
         return [
             {
                 "question": f"What is {concept_name}?",
+                "hint": "Recall the exact meaning of the topic before flipping.",
                 "answer": f"{concept_name} is a foundational topic explained with clear definitions and short examples.",
+                "kind": "core",
             },
             {
                 "question": f"Why is {concept_name} important?",
+                "hint": "Remember why the topic matters in later learning.",
                 "answer": "It helps students build a reliable base before moving to advanced applications.",
+                "kind": "summary",
             },
             {
-                "question": f"What is one common mistake in {concept_name}?",
+                "question": f"What common mistake should you avoid in {concept_name}?",
+                "hint": "Recall the mistake to avoid before solving.",
                 "answer": "Skipping intermediate steps and rushing to the final answer.",
+                "kind": "pitfall",
             },
             {
-                "question": f"How should students practice {concept_name}?",
+                "question": f"How should you practice {concept_name}?",
+                "hint": "Think about the right way to revise the concept.",
                 "answer": "Practice short sets regularly and verify each step.",
+                "kind": "practice",
             },
             {
-                "question": f"What should be checked after solving a {concept_name} problem?",
+                "question": f"What should you verify after using {concept_name}?",
+                "hint": "Recall what to verify after solving.",
                 "answer": "Check whether the method and final result are consistent.",
+                "kind": "practice",
             },
             {
-                "question": f"How can {concept_name} be revised quickly?",
+                "question": f"What is a quick high-value review pattern for {concept_name}?",
+                "hint": "Bring back the fastest high-value review pattern.",
                 "answer": "Review definition, 3 key steps, and one solved example.",
+                "kind": "summary",
             },
             {
-                "question": f"What type of examples help in {concept_name} learning?",
+                "question": f"What kind of example strengthens understanding of {concept_name}?",
+                "hint": "Recall what kind of worked examples strengthen memory.",
                 "answer": "Examples that move from easy to medium difficulty.",
+                "kind": "concept",
             },
             {
-                "question": f"What improves confidence in {concept_name}?",
+                "question": f"What builds confidence in {concept_name} over time?",
+                "hint": "Think about what strengthens confidence over time.",
                 "answer": "Frequent recall practice with feedback.",
+                "kind": "summary",
             },
         ]
 
@@ -485,6 +507,58 @@ class BaseStructuredAgent:
         if missing:
             raise ValueError(f"Missing required keys: {missing}")
 
+    def _get_cached_payload(
+        self,
+        *,
+        prompt: str,
+        required_keys: list[str] | None,
+    ) -> dict[str, Any] | None:
+        ttl_seconds = max(self.settings.llm_cache_ttl_seconds, 0)
+        if ttl_seconds <= 0:
+            return None
+        cache_key = self._build_cache_key(prompt=prompt, required_keys=required_keys)
+        current_time = time.time()
+        with self._llm_cache_lock:
+            cached_entry = self._llm_response_cache.get(cache_key)
+            if cached_entry is None:
+                return None
+            expires_at, payload = cached_entry
+            if expires_at <= current_time:
+                self._llm_response_cache.pop(cache_key, None)
+                return None
+        return deepcopy(payload)
+
+    def _store_cached_payload(
+        self,
+        *,
+        prompt: str,
+        required_keys: list[str] | None,
+        payload: dict[str, Any],
+    ) -> None:
+        ttl_seconds = max(self.settings.llm_cache_ttl_seconds, 0)
+        if ttl_seconds <= 0:
+            return
+        cache_key = self._build_cache_key(prompt=prompt, required_keys=required_keys)
+        with self._llm_cache_lock:
+            self._llm_response_cache[cache_key] = (time.time() + ttl_seconds, deepcopy(payload))
+            overflow = len(self._llm_response_cache) - max(self.settings.llm_cache_max_entries, 1)
+            if overflow > 0:
+                for key in sorted(self._llm_response_cache, key=lambda item: self._llm_response_cache[item][0])[:overflow]:
+                    self._llm_response_cache.pop(key, None)
+
+    def _build_cache_key(self, *, prompt: str, required_keys: list[str] | None) -> str:
+        return json.dumps(
+            {
+                "role": self.role,
+                "model": self._provider_model,
+                "temperature": self.temperature,
+                "enable_json_mode": self.enable_json_mode,
+                "required_keys": sorted(required_keys or []),
+                "prompt": prompt,
+            },
+            sort_keys=True,
+        )
+
     @staticmethod
     def _extract_json(raw: str) -> dict[str, Any]:
         text = raw.strip()
@@ -493,7 +567,7 @@ class BaseStructuredAgent:
             if isinstance(value, dict):
                 return value
             raise ValueError("JSON output is not an object.")
-        except Exception:
+        except json.JSONDecodeError:
             pass
 
         start = text.find("{")
@@ -507,12 +581,12 @@ class BaseStructuredAgent:
             if isinstance(value, dict):
                 return value
             raise ValueError("JSON output is not an object.")
-        except Exception:
+        except json.JSONDecodeError:
             try:
                 value = ast.literal_eval(chunk)
                 if isinstance(value, dict):
                     return value
-            except Exception:
+            except (SyntaxError, ValueError):
                 pass
         raise ValueError("Unable to parse JSON from agent output.")
 
@@ -527,13 +601,10 @@ class BaseStructuredAgent:
                 reasons.append("ChatGroq client is unavailable")
         if not LITELLM_AVAILABLE:
             reasons.append("LiteLLM is not installed")
-        if not self._crewai_enabled:
-            reasons.append("CrewAI execution is disabled")
-        if self._crewai_enabled and self._crewai_disabled:
-            reasons.append("CrewAI execution has been disabled after failures")
         return "; ".join(reasons) if reasons else "No model output available from any provider."
+
     @staticmethod
-    def _normalize_crewai_model(model_name: str) -> str:
+    def _normalize_provider_model(model_name: str) -> str:
         normalized = (model_name or "").strip()
         if not normalized:
             return "groq/llama-3.3-70b-versatile"
@@ -548,3 +619,87 @@ class BaseStructuredAgent:
             if cleaned:
                 return cleaned
         return default
+
+    @staticmethod
+    def format_evidence_pack(
+        evidence_pack: dict[str, Any] | None,
+        *,
+        max_sources: int = 4,
+        max_snippets: int = 6,
+        max_chars_per_snippet: int = 320,
+    ) -> str:
+        if not isinstance(evidence_pack, dict) or not evidence_pack:
+            return "No external evidence available."
+
+        lines: list[str] = []
+        retrieval_status = str(evidence_pack.get("retrieval_status", "unknown")).strip() or "unknown"
+        coverage_summary = str(evidence_pack.get("coverage_summary", "")).strip()
+        if coverage_summary:
+            lines.append(f"Evidence Summary: {coverage_summary}")
+        lines.append(f"Retrieval Status: {retrieval_status}")
+
+        source_documents = evidence_pack.get("source_documents") or []
+        if isinstance(source_documents, list) and source_documents:
+            lines.append("Source Documents:")
+            for item in source_documents[:max_sources]:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title", "Resource")).strip()
+                domain = str(item.get("domain", "")).strip()
+                url = str(item.get("url", "")).strip()
+                quality = item.get("quality_score")
+                quality_text = f"{float(quality):.2f}" if isinstance(quality, (int, float)) else "n/a"
+                lines.append(
+                    f"- {title} | domain={domain or 'unknown'} | quality={quality_text} | url={url}"
+                )
+
+        evidence_snippets = evidence_pack.get("evidence_snippets") or []
+        if isinstance(evidence_snippets, list) and evidence_snippets:
+            lines.append("Evidence Snippets:")
+            for item in evidence_snippets[:max_snippets]:
+                if not isinstance(item, dict):
+                    continue
+                source_title = str(item.get("source_title", "Resource")).strip()
+                snippet_type = str(item.get("snippet_type", "content")).strip()
+                text = str(item.get("text", "")).strip()
+                if len(text) > max_chars_per_snippet:
+                    text = f"{text[:max_chars_per_snippet].rstrip()}..."
+                lines.append(f"- [{snippet_type}] {source_title}: {text}")
+
+        return "\n".join(lines).strip() or "No external evidence available."
+
+    @staticmethod
+    def build_grounding_metadata(
+        evidence_pack: dict[str, Any] | None,
+        *,
+        max_sources: int = 6,
+    ) -> dict[str, Any]:
+        if not isinstance(evidence_pack, dict) or not evidence_pack:
+            return {
+                "retrieval_status": "fallback",
+                "source_count": 0,
+                "queries": [],
+                "sources": [],
+            }
+
+        sources = []
+        for item in evidence_pack.get("source_documents") or []:
+            if not isinstance(item, dict):
+                continue
+            sources.append(
+                {
+                    "title": str(item.get("title", "Resource")).strip()[:160],
+                    "url": str(item.get("url", "")).strip(),
+                    "domain": str(item.get("domain", "")).strip(),
+                    "quality_score": item.get("quality_score"),
+                }
+            )
+            if len(sources) >= max_sources:
+                break
+        return {
+            "retrieval_status": str(evidence_pack.get("retrieval_status", "unknown")).strip() or "unknown",
+            "source_count": len(sources),
+            "queries": [str(item).strip() for item in (evidence_pack.get("query_variants") or []) if str(item).strip()][:6],
+            "sources": sources,
+            "retrieved_at": str(evidence_pack.get("retrieved_at", "")).strip(),
+        }

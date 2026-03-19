@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.data.models.postgres.models import Concept, ConceptMaterial, Subject
+from src.data.models.postgres.models import Concept, ConceptMaterial, Subject, SubjectEnrollment
 from src.core.services import learning_content_service
 from src.schemas.study_material import (
     ArtifactIndex,
+    SubjectEnrollmentResponse,
     ConceptBulkCreate,
+    AdminConceptPlanItem,
     ConceptCreate,
     ConceptMaterialRecord,
     ConceptMaterialResponse,
@@ -32,8 +34,9 @@ def artifact_index_to_json(index: ArtifactIndex | None) -> dict:
     return index.model_dump(exclude_none=True)
 
 
-def build_subject(payload: SubjectCreate, owner_id: str) -> Subject:
+def build_subject(payload: SubjectCreate, owner_id: str, organization_id: str) -> Subject:
     return Subject(
+        organization_id=organization_id,
         owner_id=owner_id,
         name=payload.name.strip(),
         grade_level=payload.grade_level.strip(),
@@ -47,6 +50,25 @@ def build_concept(payload: ConceptCreate, subject_id: str) -> Concept:
         subject_id=subject_id,
         name=payload.name.strip(),
         description=payload.description,
+        topic_order=payload.topic_order,
+        pass_percentage=payload.pass_percentage,
+        material_status=MaterialLifecycleStatus.unavailable,
+        material_version=0,
+    )
+
+
+def build_concept_from_plan_item(
+    payload: AdminConceptPlanItem,
+    *,
+    subject_id: str,
+    topic_order: int,
+) -> Concept:
+    return Concept(
+        subject_id=subject_id,
+        name=payload.name.strip(),
+        description=payload.description,
+        topic_order=topic_order,
+        pass_percentage=payload.pass_percentage,
         material_status=MaterialLifecycleStatus.unavailable,
         material_version=0,
     )
@@ -82,27 +104,65 @@ def apply_publish(
             concept.material_version = material.version
 
 
+def apply_publish_selected(
+    subject: Subject,
+    concepts: list[Concept],
+    latest_materials: dict[str, ConceptMaterial],
+    publish_time: datetime,
+) -> None:
+    subject.published = True
+    subject.updated_at = publish_time
+    concept_map = {concept.id: concept for concept in concepts}
+    for concept_id, material in latest_materials.items():
+        concept = concept_map.get(concept_id)
+        if not concept:
+            continue
+        if material.lifecycle_status != MaterialLifecycleStatus.published:
+            material.lifecycle_status = MaterialLifecycleStatus.published
+        if material.published_at is None:
+            material.published_at = publish_time
+        if concept.material_status != MaterialLifecycleStatus.published:
+            concept.material_status = MaterialLifecycleStatus.published
+        concept.material_version = material.version
+
+
 def to_concept_response(concept: Concept) -> ConceptResponse:
     return ConceptResponse(
         concept_id=concept.id,
         name=concept.name,
         description=concept.description,
+        topic_order=concept.topic_order,
+        pass_percentage=concept.pass_percentage,
         created_at=concept.created_at,
         material_status=concept.material_status,
         material_version=concept.material_version,
     )
 
 
-def to_subject_response(subject: Subject, concepts: list[Concept]) -> SubjectResponse:
+def to_subject_response(
+    subject: Subject,
+    concepts: list[Concept],
+    enrollment: SubjectEnrollment | None = None,
+) -> SubjectResponse:
     return SubjectResponse(
         subject_id=subject.id,
         name=subject.name,
         grade_level=subject.grade_level,
         description=subject.description,
         published=subject.published,
+        is_enrolled=enrollment is not None,
+        enrolled_at=enrollment.enrolled_at if enrollment else None,
         created_at=subject.created_at,
         updated_at=subject.updated_at,
         concepts=[to_concept_response(concept) for concept in concepts],
+    )
+
+
+def to_subject_enrollment_response(enrollment: SubjectEnrollment) -> SubjectEnrollmentResponse:
+    return SubjectEnrollmentResponse(
+        subject_id=enrollment.subject_id,
+        student_id=enrollment.student_id,
+        enrolled_at=enrollment.enrolled_at,
     )
 
 

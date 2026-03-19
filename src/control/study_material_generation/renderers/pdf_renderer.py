@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+import json
+import re
 from pathlib import Path
 from datetime import datetime
 from xml.sax.saxutils import escape
@@ -55,6 +58,7 @@ class PdfRenderer:
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import cm
         from reportlab.platypus import (
+            KeepTogether,
             ListFlowable,
             ListItem,
             PageBreak,
@@ -147,6 +151,120 @@ class PdfRenderer:
                 spaceAfter=6,
             )
 
+        def parse_structured_text(raw_text: str):
+            text = str(raw_text or "").strip()
+            if not text or not (text.startswith("{") or text.startswith("[")):
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            try:
+                return ast.literal_eval(text)
+            except (SyntaxError, ValueError):
+                return None
+
+        def split_example_steps(example_text: str) -> list[str]:
+            text = str(example_text or "").strip()
+            if not text:
+                return []
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if len(lines) > 1:
+                return lines
+            sentences = [
+                sentence.strip()
+                for sentence in re.split(r"(?<=[.!?])\s+", text)
+                if sentence.strip()
+            ]
+            if len(sentences) > 1:
+                return sentences
+            return [text]
+
+        def parse_example_payload(example_text: str) -> dict[str, str | list[str]]:
+            parsed = parse_structured_text(example_text)
+            if isinstance(parsed, dict):
+                title = str(parsed.get("title") or parsed.get("example") or "").strip()
+                prompt = str(
+                    parsed.get("prompt")
+                    or parsed.get("question")
+                    or parsed.get("problem")
+                    or parsed.get("task")
+                    or parsed.get("description")
+                    or parsed.get("context")
+                    or ""
+                ).strip()
+                raw_steps = (
+                    parsed.get("steps")
+                    or parsed.get("stepwise_solution")
+                    or parsed.get("solution")
+                    or parsed.get("working")
+                    or parsed.get("process")
+                )
+                if isinstance(raw_steps, list):
+                    steps = [str(item).strip() for item in raw_steps if str(item).strip()]
+                elif isinstance(raw_steps, str):
+                    steps = split_example_steps(raw_steps)
+                else:
+                    steps = []
+                if not steps:
+                    explanation = parsed.get("explanation") or parsed.get("note")
+                    if explanation:
+                        steps = split_example_steps(str(explanation))
+                result = str(parsed.get("result") or parsed.get("answer") or parsed.get("final_answer") or "").strip()
+                example_style = str(parsed.get("example_type") or parsed.get("style") or parsed.get("type") or "").strip()
+                return {
+                    "title": title,
+                    "prompt": prompt,
+                    "steps": steps,
+                    "result": result,
+                    "example_style": example_style,
+                }
+            if isinstance(parsed, list):
+                steps = [str(item).strip() for item in parsed if str(item).strip()]
+                return {"title": "", "prompt": "", "steps": steps, "result": "", "example_style": ""}
+            return {
+                "title": "",
+                "prompt": "",
+                "steps": split_example_steps(example_text),
+                "result": "",
+                "example_style": "",
+            }
+
+        def format_example_label(example_style: str) -> str:
+            normalized = str(example_style or "").strip().lower()
+            if normalized == "derivation":
+                return "Derivation"
+            if normalized == "calculation":
+                return "Worked Calculation"
+            if normalized == "scenario":
+                return "Application"
+            if not normalized:
+                return ""
+            return " ".join(part.capitalize() for part in re.split(r"[\s_-]+", normalized) if part)
+
+        def example_flow(example_text: str, index: int) -> list:
+            parsed = parse_example_payload(example_text)
+            title = str(parsed.get("title") or "").strip()
+            prompt = str(parsed.get("prompt") or "").strip()
+            result = str(parsed.get("result") or "").strip()
+            example_style = format_example_label(str(parsed.get("example_style") or ""))
+            steps = [str(item).strip() for item in parsed.get("steps", []) if str(item).strip()]
+            heading = title or f"Worked Example {index}"
+            if example_style:
+                heading = f"{heading} ({example_style})"
+
+            flowables = [Paragraph(f"<b>Example {index}.</b> {clean_text(heading)}", body_style)]
+            if prompt:
+                flowables.append(Paragraph(f"<b>Problem.</b> {clean_text(prompt)}", body_small))
+            if steps:
+                step_list = list_flow(steps, bullet_type="1", item_style=body_small)
+                if step_list:
+                    flowables.append(step_list)
+            if result:
+                flowables.append(Paragraph(f"<b>Result.</b> {clean_text(result)}", body_small))
+            flowables.append(Spacer(1, 4))
+            return [KeepTogether(flowables)]
+
         def header_footer(canvas, doc_ref):
             canvas.saveState()
             canvas.setFont("Helvetica", 9)
@@ -193,7 +311,7 @@ class PdfRenderer:
                 if formulas_list:
                     story.append(formulas_list)
 
-            if pack.key_steps:
+            if pack.stepwise_breakdown_required and pack.key_steps:
                 story.append(Paragraph("Key Steps", section_style))
                 steps_list = list_flow(pack.key_steps, item_style=body_style)
                 if steps_list:
@@ -201,9 +319,8 @@ class PdfRenderer:
 
             if variant == "full" and pack.examples:
                 story.append(Paragraph("Practical Examples", section_style))
-                examples_list = list_flow(pack.examples, bullet_type="1", item_style=body_style)
-                if examples_list:
-                    story.append(examples_list)
+                for example_index, example in enumerate(pack.examples, start=1):
+                    story.extend(example_flow(example, example_index))
 
             if pack.common_mistakes:
                 story.append(Paragraph("Common Mistakes", section_style))

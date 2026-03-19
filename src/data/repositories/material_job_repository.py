@@ -97,6 +97,26 @@ async def update_job_concepts(job_id: str, concept_updates: dict[str, dict]) -> 
                 row.updated_at = datetime.now(timezone.utc)
 
 
+async def delete_job_concepts(job_id: str, concept_ids: list[str]) -> None:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            for concept_id in concept_ids:
+                row = await session.get(
+                    MaterialJobConcept,
+                    {"job_id": job_id, "concept_id": concept_id},
+                )
+                if row:
+                    await session.delete(row)
+
+
+async def delete_job(job_id: str) -> None:
+    async with AsyncSessionFactory() as session:
+        async with session.begin():
+            job = await session.get(MaterialJob, job_id)
+            if job:
+                await session.delete(job)
+
+
 async def set_concept_status(job_id: str, concept_id: str, status_text: str) -> None:
     async with AsyncSessionFactory() as session:
         async with session.begin():

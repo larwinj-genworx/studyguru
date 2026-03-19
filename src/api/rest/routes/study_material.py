@@ -1,23 +1,43 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from src.api.rest.dependencies import get_current_user, require_role
-from src.core.services import material_job_app_service, study_material_app_service
+from src.core.services import admin_user_app_service, concept_image_app_service, enrollment_app_service, flashcard_app_service, learning_bot_app_service, material_job_app_service, progression_app_service, study_material_app_service
 from src.core.services import resource_review_app_service
+from src.core.services.object_storage_service import get_object_storage_service
+from src.schemas.concept_images import ConceptImageCollectionResponse, ConceptImageGenerationRequest
+from src.schemas.learning_bot import (
+    LearningBotMessageCreate,
+    LearningBotSessionDetailResponse,
+    LearningBotTurnResponse,
+)
+from src.schemas.auth import (
+    AdminManagedStudentCreateRequest,
+    AdminManagedStudentResponse,
+    AdminManagedStudentUpdateRequest,
+)
 from src.schemas.study_material import (
+    AdminConceptPlanUpdateRequest,
     AdminMaterialApproveRequest,
     AdminMaterialJobCreate,
+    AdminEnrolledStudentResponse,
+    AdminStudentActivityResponse,
+    AdminMaterialPublishRequest,
     AdminMaterialRegenerateRequest,
     ConceptBulkCreate,
     ConceptBookmarkResponse,
+    FlashcardItem,
     ConceptMaterialResponse,
     ConceptResponse,
     ConceptResourcesResponse,
     LearningContentResponse,
     LearningContentUpdate,
     MaterialJobStatusResponse,
+    StudentSubjectProgressResponse,
+    StudentTopicProgressResponse,
     StudentConceptSelection,
     SubjectCreate,
     SubjectResponse,
@@ -25,6 +45,7 @@ from src.schemas.study_material import (
 )
 
 router = APIRouter(tags=["study-material"])
+_storage = get_object_storage_service()
 
 
 # ----- Admin APIs -----
@@ -38,7 +59,11 @@ async def create_subject(
     payload: SubjectCreate,
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
-    return await study_material_app_service.create_subject(payload, owner_id=current_user["id"])
+    return await study_material_app_service.create_subject(
+        payload,
+        owner_id=current_user["id"],
+        organization_id=current_user["organization_id"],
+    )
 
 
 @router.post(
@@ -52,6 +77,23 @@ async def add_concepts(
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
     return await study_material_app_service.add_concepts_bulk(
+        subject_id,
+        payload,
+        owner_id=current_user["id"],
+    )
+
+
+@router.put(
+    "/admin/subjects/{subject_id}/concept-plan",
+    response_model=SubjectResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def save_admin_concept_plan(
+    subject_id: str,
+    payload: AdminConceptPlanUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> SubjectResponse:
+    return await study_material_app_service.save_concept_plan(
         subject_id,
         payload,
         owner_id=current_user["id"],
@@ -86,9 +128,14 @@ async def get_subject(
 )
 async def delete_subject(
     subject_id: str,
+    force: bool = False,
     current_user: dict = Depends(get_current_user),
 ) -> None:
-    await study_material_app_service.delete_subject(subject_id, owner_id=current_user["id"])
+    await study_material_app_service.delete_subject(
+        subject_id,
+        owner_id=current_user["id"],
+        force=force,
+    )
 
 
 @router.get(
@@ -104,6 +151,104 @@ async def list_admin_subject_materials(
         subject_id,
         published_only=False,
         owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/enrollments",
+    response_model=list[AdminEnrolledStudentResponse],
+    dependencies=[Depends(require_role("admin"))],
+)
+async def list_admin_subject_enrollments(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[AdminEnrolledStudentResponse]:
+    return await enrollment_app_service.list_admin_subject_enrollments(
+        subject_id=subject_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/students",
+    response_model=list[AdminManagedStudentResponse],
+    dependencies=[Depends(require_role("admin"))],
+)
+async def list_admin_students(
+    current_user: dict = Depends(get_current_user),
+) -> list[AdminManagedStudentResponse]:
+    return await admin_user_app_service.list_managed_students(
+        current_user["organization_id"]
+    )
+
+
+@router.post(
+    "/admin/students",
+    response_model=AdminManagedStudentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def create_admin_student(
+    payload: AdminManagedStudentCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> AdminManagedStudentResponse:
+    return await admin_user_app_service.create_managed_student(
+        payload,
+        current_user["organization_id"],
+    )
+
+
+@router.patch(
+    "/admin/students/{student_id}",
+    response_model=AdminManagedStudentResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def update_admin_student(
+    student_id: str,
+    payload: AdminManagedStudentUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> AdminManagedStudentResponse:
+    return await admin_user_app_service.update_managed_student(
+        student_id=student_id,
+        payload=payload,
+        organization_id=current_user["organization_id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/students/{student_id}/activity",
+    response_model=AdminStudentActivityResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def get_admin_student_activity(
+    subject_id: str,
+    student_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> AdminStudentActivityResponse:
+    return await enrollment_app_service.get_admin_student_activity(
+        subject_id=subject_id,
+        student_id=student_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/approved-materials.zip",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def download_approved_materials_bundle(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> FileResponse:
+    bundle_path = await study_material_app_service.get_approved_subject_bundle_path(
+        subject_id=subject_id,
+        owner_id=current_user["id"],
+    )
+    return FileResponse(
+        path=str(bundle_path),
+        filename=bundle_path.name,
+        media_type="application/zip",
+        background=BackgroundTask(bundle_path.unlink, missing_ok=True),
     )
 
 
@@ -171,6 +316,23 @@ async def approve_material_job(
     return await material_job_app_service.approve_job(job_id, payload, owner_id=current_user["id"])
 
 
+@router.delete(
+    "/admin/material-jobs/{job_id}/concepts/{concept_id}",
+    response_model=MaterialJobStatusResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def discard_material_job_concept(
+    job_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> MaterialJobStatusResponse:
+    return await material_job_app_service.discard_job_concept(
+        job_id=job_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
+
+
 @router.get(
     "/admin/material-jobs/{job_id}/download.zip",
     dependencies=[Depends(require_role("admin"))],
@@ -178,13 +340,17 @@ async def approve_material_job(
 async def download_admin_job_zip(
     job_id: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    zip_path = await material_job_app_service.get_job_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_artifact_path(
         job_id=job_id,
         artifact_name="zip",
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(zip_path), filename=zip_path.name, media_type="application/zip")
+    return _storage.build_download_response(
+        _storage.material_area,
+        relative_path,
+        media_type="application/zip",
+    )
 
 
 @router.get(
@@ -195,13 +361,13 @@ async def download_admin_job_artifact(
     job_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    artifact_path = await material_job_app_service.get_job_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_artifact_path(
         job_id=job_id,
         artifact_name=artifact_name,
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.get(
@@ -213,14 +379,14 @@ async def download_admin_concept_artifact(
     concept_id: str,
     artifact_name: str,
     current_user: dict = Depends(get_current_user),
-) -> FileResponse:
-    artifact_path = await material_job_app_service.get_job_concept_artifact_path(
+) -> Response:
+    relative_path = await material_job_app_service.get_job_concept_artifact_path(
         job_id=job_id,
         concept_id=concept_id,
         artifact_name=artifact_name,
         owner_id=current_user["id"],
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.post(
@@ -233,6 +399,23 @@ async def publish_subject(
     current_user: dict = Depends(get_current_user),
 ) -> SubjectResponse:
     return await study_material_app_service.publish_subject(subject_id, owner_id=current_user["id"])
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/publish/concepts",
+    response_model=SubjectResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def publish_selected_concepts(
+    subject_id: str,
+    payload: AdminMaterialPublishRequest,
+    current_user: dict = Depends(get_current_user),
+) -> SubjectResponse:
+    return await study_material_app_service.publish_selected_concepts(
+        subject_id,
+        concept_ids=payload.concept_ids,
+        owner_id=current_user["id"],
+    )
 
 
 @router.post(
@@ -338,14 +521,118 @@ async def approve_admin_concept_video(
     )
 
 
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def get_admin_concept_images(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.get_admin_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/generate",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def generate_admin_concept_images(
+    subject_id: str,
+    concept_id: str,
+    payload: ConceptImageGenerationRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.generate_admin_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        owner_id=current_user["id"],
+        prompt=payload.prompt,
+        refresh=payload.refresh,
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/approve",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def approve_admin_concept_image(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.approve_admin_concept_image(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/reject",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def reject_admin_concept_image(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    return await concept_image_app_service.reject_admin_concept_image(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/admin/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/file",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def download_admin_concept_image_file(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    variant: str = Query(default="full"),
+    current_user: dict = Depends(get_current_user),
+) -> Response:
+    relative_path, mime_type, local_path = await concept_image_app_service.get_admin_concept_image_file_path(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        owner_id=current_user["id"],
+        variant=variant,
+    )
+    return _storage.build_download_response(
+        _storage.concept_visual_area,
+        relative_path,
+        media_type=mime_type,
+        local_path=local_path,
+        inline=True,
+    )
+
+
 # ----- Student APIs -----
 @router.get(
     "/student/subjects",
     response_model=list[SubjectResponse],
     dependencies=[Depends(require_role("student"))],
 )
-async def list_published_subjects() -> list[SubjectResponse]:
-    return await study_material_app_service.list_published_subjects()
+async def list_published_subjects(
+    current_user: dict = Depends(get_current_user),
+) -> list[SubjectResponse]:
+    return await enrollment_app_service.list_student_subjects(current_user["id"])
 
 
 @router.get(
@@ -353,8 +640,46 @@ async def list_published_subjects() -> list[SubjectResponse]:
     response_model=list[ConceptResponse],
     dependencies=[Depends(require_role("student"))],
 )
-async def list_published_subject_concepts(subject_id: str) -> list[ConceptResponse]:
+async def list_published_subject_concepts(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[ConceptResponse]:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     return await study_material_app_service.list_subject_concepts(subject_id=subject_id, published_only=True)
+
+
+@router.get(
+    "/student/subjects/{subject_id}/progression",
+    response_model=StudentSubjectProgressResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_subject_progression(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StudentSubjectProgressResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    return await progression_app_service.get_student_subject_progress(
+        subject_id=subject_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/complete",
+    response_model=StudentTopicProgressResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def mark_student_topic_complete(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StudentTopicProgressResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    return await progression_app_service.mark_topic_learning_complete(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
 
 
 @router.get(
@@ -362,7 +687,11 @@ async def list_published_subject_concepts(subject_id: str) -> list[ConceptRespon
     response_model=list[ConceptMaterialResponse],
     dependencies=[Depends(require_role("student"))],
 )
-async def list_published_subject_materials(subject_id: str) -> list[ConceptMaterialResponse]:
+async def list_published_subject_materials(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[ConceptMaterialResponse]:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     return await study_material_app_service.list_subject_materials(subject_id, published_only=True)
 
 
@@ -374,9 +703,33 @@ async def list_published_subject_materials(subject_id: str) -> list[ConceptMater
 async def query_selected_concept_materials(
     subject_id: str,
     payload: StudentConceptSelection,
+    current_user: dict = Depends(get_current_user),
 ) -> list[ConceptMaterialResponse]:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
     return await study_material_app_service.query_selected_concept_materials(
         subject_id, payload.concept_ids
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/flashcards",
+    response_model=list[FlashcardItem],
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_concept_flashcards(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[FlashcardItem]:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await flashcard_app_service.get_student_concept_flashcards(
+        subject_id=subject_id,
+        concept_id=concept_id,
     )
 
 
@@ -384,13 +737,24 @@ async def query_selected_concept_materials(
     "/student/subjects/{subject_id}/concepts/{concept_id}/artifacts/{artifact_name}",
     dependencies=[Depends(require_role("student"))],
 )
-async def download_student_concept_artifact(subject_id: str, concept_id: str, artifact_name: str) -> FileResponse:
-    artifact_path = await material_job_app_service.get_published_concept_artifact_path(
+async def download_student_concept_artifact(
+    subject_id: str,
+    concept_id: str,
+    artifact_name: str,
+    current_user: dict = Depends(get_current_user),
+) -> Response:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    relative_path = await material_job_app_service.get_published_concept_artifact_path(
         subject_id=subject_id,
         concept_id=concept_id,
         artifact_name=artifact_name,
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)
 
 
 @router.get(
@@ -401,10 +765,142 @@ async def download_student_concept_artifact(subject_id: str, concept_id: str, ar
 async def get_student_learning_content(
     subject_id: str,
     concept_id: str,
+    current_user: dict = Depends(get_current_user),
 ) -> LearningContentResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     return await study_material_app_service.get_student_concept_learning_content(
         subject_id=subject_id,
         concept_id=concept_id,
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/session",
+    response_model=LearningBotSessionDetailResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def get_student_learning_bot_session(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotSessionDetailResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await learning_bot_app_service.get_student_learning_bot_session(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/messages",
+    response_model=LearningBotTurnResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def send_student_learning_bot_message(
+    subject_id: str,
+    concept_id: str,
+    payload: LearningBotMessageCreate,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotTurnResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await learning_bot_app_service.send_student_learning_bot_message(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+        payload=payload,
+    )
+
+
+@router.post(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/learning-bot/session/reset",
+    response_model=LearningBotSessionDetailResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def reset_student_learning_bot_session(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> LearningBotSessionDetailResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await learning_bot_app_service.reset_student_learning_bot_session(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/images",
+    response_model=ConceptImageCollectionResponse,
+    dependencies=[Depends(require_role("student"))],
+)
+async def list_student_concept_images(
+    subject_id: str,
+    concept_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConceptImageCollectionResponse:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    return await concept_image_app_service.list_student_concept_images(
+        subject_id=subject_id,
+        concept_id=concept_id,
+    )
+
+
+@router.get(
+    "/student/subjects/{subject_id}/concepts/{concept_id}/images/{image_id}/file",
+    dependencies=[Depends(require_role("student"))],
+)
+async def download_student_concept_image_file(
+    subject_id: str,
+    concept_id: str,
+    image_id: str,
+    variant: str = Query(default="full"),
+    current_user: dict = Depends(get_current_user),
+) -> Response:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
+    relative_path, mime_type, local_path = await concept_image_app_service.get_student_concept_image_file_path(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        image_id=image_id,
+        variant=variant,
+    )
+    return _storage.build_download_response(
+        _storage.concept_visual_area,
+        relative_path,
+        media_type=mime_type,
+        local_path=local_path,
+        inline=True,
     )
 
 
@@ -433,6 +929,12 @@ async def add_student_bookmark(
     concept_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> None:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     await study_material_app_service.add_student_bookmark(
         user_id=current_user["id"],
         subject_id=subject_id,
@@ -450,6 +952,12 @@ async def remove_student_bookmark(
     concept_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> None:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    await progression_app_service.ensure_student_can_access_concept(
+        subject_id=subject_id,
+        concept_id=concept_id,
+        user_id=current_user["id"],
+    )
     await study_material_app_service.remove_student_bookmark(
         user_id=current_user["id"],
         concept_id=concept_id,
@@ -460,9 +968,14 @@ async def remove_student_bookmark(
     "/student/subjects/{subject_id}/artifacts/{artifact_name}",
     dependencies=[Depends(require_role("student"))],
 )
-async def download_student_subject_artifact(subject_id: str, artifact_name: str) -> FileResponse:
-    artifact_path = await material_job_app_service.get_published_subject_artifact_path(
+async def download_student_subject_artifact(
+    subject_id: str,
+    artifact_name: str,
+    current_user: dict = Depends(get_current_user),
+) -> Response:
+    await enrollment_app_service.ensure_student_enrollment(subject_id, current_user["id"])
+    relative_path = await material_job_app_service.get_published_subject_artifact_path(
         subject_id=subject_id,
         artifact_name=artifact_name,
     )
-    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
+    return _storage.build_download_response(_storage.material_area, relative_path)

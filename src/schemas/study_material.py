@@ -5,7 +5,10 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
+
+from src.schemas.learning_bot import LearningBotSessionStatus
+from src.schemas.quiz import QuizSessionStatus, QuizSessionType, QuizTopicPerformance
 
 
 def utc_now() -> datetime:
@@ -32,37 +35,74 @@ class MaterialLifecycleStatus(str, Enum):
 
 
 class ConceptCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=600)
+    topic_order: int = Field(ge=1, le=500)
+    pass_percentage: int = Field(ge=1, le=100)
 
 
 class ConceptBulkCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concepts: list[ConceptCreate] = Field(min_length=1, max_length=50)
 
 
+class AdminConceptPlanItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    concept_id: str | None = None
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=600)
+    pass_percentage: int = Field(ge=1, le=100)
+
+
+class AdminConceptPlanUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    concepts: list[AdminConceptPlanItem] = Field(min_length=1, max_length=50)
+
+
 class SubjectCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     name: str = Field(min_length=2, max_length=120)
     grade_level: str = Field(min_length=1, max_length=40)
     description: str | None = Field(default=None, max_length=600)
 
 
 class AdminMaterialJobCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     subject_id: str
     concept_ids: list[str] = Field(min_length=1, max_length=30)
     learner_profile: str | None = Field(default=None, max_length=500)
 
 
 class AdminMaterialRegenerateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     learner_profile: str | None = Field(default=None, max_length=500)
     revision_note: str | None = Field(default=None, max_length=500)
 
 
 class AdminMaterialApproveRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_ids: list[str] | None = Field(default=None, max_length=30)
     approval_note: str | None = Field(default=None, max_length=500)
 
 
+class AdminMaterialPublishRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    concept_ids: list[str] = Field(min_length=1, max_length=30)
+
+
 class StudentConceptSelection(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     concept_ids: list[str] = Field(min_length=1, max_length=30)
 
 
@@ -119,13 +159,25 @@ class LearningContentResponse(BaseModel):
 
 
 class LearningContentUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     content: LearningContent
+
+
+class StudentTopicProgressState(str, Enum):
+    locked = "locked"
+    available = "available"
+    ready_for_assessment = "ready_for_assessment"
+    retry_required = "retry_required"
+    passed = "passed"
 
 
 class ConceptResponse(BaseModel):
     concept_id: str
     name: str
     description: str | None = None
+    topic_order: int
+    pass_percentage: int
     created_at: datetime
     material_status: MaterialLifecycleStatus = MaterialLifecycleStatus.unavailable
     material_version: int = 0
@@ -137,9 +189,48 @@ class SubjectResponse(BaseModel):
     grade_level: str
     description: str | None = None
     published: bool
+    is_enrolled: bool = False
+    enrolled_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     concepts: list[ConceptResponse] = Field(default_factory=list)
+
+
+class SubjectEnrollmentResponse(BaseModel):
+    subject_id: str
+    student_id: str
+    enrolled_at: datetime
+
+
+class StudentTopicProgressResponse(BaseModel):
+    concept_id: str
+    name: str
+    description: str | None = None
+    topic_order: int
+    pass_percentage: int
+    material_status: MaterialLifecycleStatus
+    material_version: int = 0
+    state: StudentTopicProgressState
+    is_current: bool = False
+    is_locked: bool = False
+    learning_completed_at: datetime | None = None
+    passed_at: datetime | None = None
+    latest_score_percent: float | None = None
+    best_score_percent: float | None = None
+    assessment_attempts: int = 0
+    blocker_message: str | None = None
+
+
+class StudentSubjectProgressResponse(BaseModel):
+    subject_id: str
+    subject_name: str
+    grade_level: str
+    total_topics: int = 0
+    completed_topics: int = 0
+    progress_percent: float = 0
+    current_concept_id: str | None = None
+    current_concept_name: str | None = None
+    topics: list[StudentTopicProgressResponse] = Field(default_factory=list)
 
 
 class MaterialJobStatusResponse(BaseModel):
@@ -164,13 +255,15 @@ class ConceptContentPack(BaseModel):
     definition: str
     intuition: str
     formulas: list[str] = Field(default_factory=list)
-    key_steps: list[str]
-    common_mistakes: list[str]
-    examples: list[str]
-    mcqs: list[dict[str, Any]]
-    flashcards: list[dict[str, str]]
-    references: list[dict[str, str]]
-    recap: list[str]
+    stepwise_breakdown_required: bool = False
+    key_steps: list[str] = Field(default_factory=list)
+    common_mistakes: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    mcqs: list[dict[str, Any]] = Field(default_factory=list)
+    flashcards: list[dict[str, str]] = Field(default_factory=list)
+    references: list[dict[str, str]] = Field(default_factory=list)
+    recap: list[str] = Field(default_factory=list)
+    practical_examples_required: bool = True
 
 
 class ConceptMaterialRecord(BaseModel):
@@ -193,6 +286,24 @@ class ConceptBookmarkResponse(BaseModel):
     created_at: datetime
 
 
+class FlashcardKind(str, Enum):
+    core = "core"
+    intuition = "intuition"
+    step = "step"
+    formula = "formula"
+    pitfall = "pitfall"
+    summary = "summary"
+    practice = "practice"
+    concept = "concept"
+
+
+class FlashcardItem(BaseModel):
+    question: str
+    answer: str
+    hint: str | None = None
+    kind: FlashcardKind = FlashcardKind.concept
+
+
 class ResourceItem(BaseModel):
     title: str
     url: str
@@ -208,8 +319,110 @@ class ConceptResourcesResponse(BaseModel):
     approved_video_id: str | None = None
 
 
+class StudentActivityOverviewResponse(BaseModel):
+    total_concepts: int = 0
+    engaged_concepts: int = 0
+    completed_topics: int = 0
+    progress_percent: float = 0
+    current_topic_name: str | None = None
+    current_topic_order: int | None = None
+    failed_assessments: int = 0
+    passed_assessments: int = 0
+    bookmarks_count: int = 0
+    total_quiz_sessions: int = 0
+    completed_quizzes: int = 0
+    average_quiz_accuracy: float | None = None
+    best_quiz_accuracy: float | None = None
+    learning_sessions: int = 0
+    learning_messages: int = 0
+    last_activity_at: datetime | None = None
+
+
+class AdminEnrolledStudentResponse(BaseModel):
+    student_id: str
+    student_email: str
+    enrolled_at: datetime
+    overview: StudentActivityOverviewResponse
+
+
+class AdminStudentConceptActivityResponse(BaseModel):
+    concept_id: str
+    concept_name: str
+    topic_order: int
+    pass_percentage: int
+    status: str
+    progress_state: StudentTopicProgressState | None = None
+    is_current: bool = False
+    has_bookmark: bool = False
+    learning_completed_at: datetime | None = None
+    assessment_attempts: int = 0
+    latest_score_percent: float | None = None
+    best_score_percent: float | None = None
+    passed_at: datetime | None = None
+    blocker_message: str | None = None
+    quiz_sessions: int = 0
+    completed_quizzes: int = 0
+    best_quiz_accuracy: float | None = None
+    learning_sessions: int = 0
+    learning_messages: int = 0
+    last_activity_at: datetime | None = None
+
+
+class AdminStudentQuizReportResponse(BaseModel):
+    session_id: str
+    session_type: QuizSessionType = QuizSessionType.custom_practice
+    status: QuizSessionStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    accuracy: float | None = None
+    score_percent: float | None = None
+    correct_count: int = 0
+    total_questions: int = 0
+    required_pass_percentage: int | None = None
+    passed: bool | None = None
+    topics: list[QuizTopicPerformance] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class AdminStudentLearningSessionResponse(BaseModel):
+    session_id: str
+    concept_id: str
+    concept_name: str
+    status: LearningBotSessionStatus
+    title: str | None = None
+    prompt_count: int = 0
+    message_count: int = 0
+    last_message_at: datetime
+
+
+class StudentActivityEventResponse(BaseModel):
+    event_type: str
+    title: str
+    description: str | None = None
+    occurred_at: datetime
+    concept_id: str | None = None
+    concept_name: str | None = None
+
+
+class AdminStudentActivityResponse(BaseModel):
+    subject_id: str
+    subject_name: str
+    grade_level: str
+    student_id: str
+    student_email: str
+    enrolled_at: datetime
+    overview: StudentActivityOverviewResponse
+    concept_activity: list[AdminStudentConceptActivityResponse] = Field(default_factory=list)
+    bookmarks: list[ConceptBookmarkResponse] = Field(default_factory=list)
+    learning_sessions: list[AdminStudentLearningSessionResponse] = Field(default_factory=list)
+    quiz_reports: list[AdminStudentQuizReportResponse] = Field(default_factory=list)
+    recent_activity: list[StudentActivityEventResponse] = Field(default_factory=list)
+
+
 class VideoFeedbackRequest(BaseModel):
-    url: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: AnyHttpUrl
 
 
 LearningSection.model_rebuild()

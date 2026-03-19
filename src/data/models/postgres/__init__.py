@@ -1,5 +1,15 @@
 from .base import Base
-from .models import Concept, ConceptMaterial, MaterialJob, MaterialJobConcept, Subject, User
+from .models import (
+    Concept,
+    ConceptMaterial,
+    MaterialJob,
+    MaterialJobConcept,
+    Subject,
+    User,
+    QuizQuestion,
+    QuizResponse,
+    QuizSession,
+)
 
 __all__ = [
     "Base",
@@ -9,4 +19,7 @@ __all__ = [
     "MaterialJobConcept",
     "Subject",
     "User",
+    "QuizQuestion",
+    "QuizResponse",
+    "QuizSession",
 ]
