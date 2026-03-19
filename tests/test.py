@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -12,6 +13,7 @@ SOURCE_DIR = Path(__file__).resolve().parent / "output"
 WORKERS = 8
 TARGET_SERVICE_ACCOUNT = "gwx-cloudrun-sa-01@gwx-internship-01.iam.gserviceaccount.com"
 SCOPES = ("https://www.googleapis.com/auth/devstorage.read_write",)
+logger = logging.getLogger(__name__)
 
 
 def create_storage_client(project: str):
@@ -67,21 +69,25 @@ def main() -> int:
 
     files = sorted(path for path in root.rglob("*") if path.is_file())
     if not files:
-        print(f"No files found under: {root}")
+        logger.info("No files found for upload.", extra={"source_dir": str(root)})
         return 0
 
     client = create_storage_client(PROJECT_ID)
     bucket = client.bucket(BUCKET_NAME)
 
     total_bytes = sum(path.stat().st_size for path in files)
-    print(f"Source folder : {root}")
-    print(f"Project       : {PROJECT_ID}")
-    print(f"Bucket        : {BUCKET_NAME}")
-    print(f"Prefix        : {BUCKET_PREFIX}")
-    print(f"Impersonation : {TARGET_SERVICE_ACCOUNT}")
-    print(f"Files         : {len(files)}")
-    print(f"Total bytes   : {total_bytes}")
-    print()
+    logger.info(
+        "Starting bulk upload.",
+        extra={
+            "source_dir": str(root),
+            "project_id": PROJECT_ID,
+            "bucket_name": BUCKET_NAME,
+            "bucket_prefix": BUCKET_PREFIX,
+            "target_service_account": TARGET_SERVICE_ACCOUNT,
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+        },
+    )
 
     uploaded = 0
     with ThreadPoolExecutor(max_workers=max(WORKERS, 1)) as executor:
@@ -92,12 +98,19 @@ def main() -> int:
         for future in as_completed(future_map):
             object_name = future.result()
             uploaded += 1
-            print(f"UPLOADED {object_name}")
+            logger.info("Uploaded file to object storage.", extra={"object_name": object_name})
 
-    print()
-    print(f"Completed upload of {uploaded} files to gs://{BUCKET_NAME}/{BUCKET_PREFIX}/")
+    logger.info(
+        "Completed bulk upload.",
+        extra={
+            "uploaded_files": uploaded,
+            "bucket_name": BUCKET_NAME,
+            "bucket_prefix": BUCKET_PREFIX,
+        },
+    )
     return 0
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     raise SystemExit(main())

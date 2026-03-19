@@ -19,7 +19,7 @@ def _load_flashcard_payload(path: Path, concept_id: str) -> list[dict[str, Any]]
         return []
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Stored flashcards could not be read: {exc}",

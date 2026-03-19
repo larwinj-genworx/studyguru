@@ -3,15 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
 
 
 class PlatformAdminProvisionRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     organization_name: str = Field(min_length=2, max_length=120)
     admin_email: EmailStr
     password: str = Field(min_length=6, max_length=128)
@@ -24,11 +28,15 @@ class ManagedStudentSubjectResponse(BaseModel):
 
 
 class AdminManagedStudentCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
 
 
 class AdminManagedStudentUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     password: str | None = Field(default=None, min_length=6, max_length=128)
     is_active: bool | None = None
 

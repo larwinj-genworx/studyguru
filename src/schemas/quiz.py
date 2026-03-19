@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class QuizSessionStatus(str, Enum):
@@ -24,16 +24,22 @@ class QuizQuestionSourceType(str, Enum):
 
 
 class QuizSessionStartRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     subject_id: str
     concept_ids: list[str] = Field(min_length=1, max_length=30)
 
 
 class TopicAssessmentStartRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     subject_id: str
     concept_id: str
 
 
 class QuizAnswerRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     question_id: str
     selected_option: str = Field(min_length=1, max_length=400)
 

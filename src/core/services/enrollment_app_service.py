@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+import logging
 
 from fastapi import HTTPException, status
 
@@ -33,6 +34,8 @@ from src.schemas.study_material import (
     StudentTopicProgressState,
     SubjectResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 _TRACKABLE_STATUSES = {
     MaterialLifecycleStatus.approved,
@@ -507,7 +510,8 @@ def _build_quiz_reports(
         for item in report_payload.get("topic_breakdown", []):
             try:
                 topic_breakdown.append(QuizTopicPerformance(**item))
-            except Exception:
+            except (TypeError, ValueError):
+                logger.warning("Skipping invalid quiz topic breakdown payload.", exc_info=True)
                 continue
         recommendations = [
             str(item).strip() for item in report_payload.get("recommendations", []) if str(item).strip()

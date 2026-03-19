@@ -31,7 +31,7 @@ def compute_complexity_score(metadata: dict[str, Any]) -> float:
         try:
             value = float(raw)
             return max(0.0, min(1.0, value))
-        except Exception:
+        except (TypeError, ValueError):
             pass
     level = str(metadata.get("concept_level") or "").strip().lower()
     if level == "micro":

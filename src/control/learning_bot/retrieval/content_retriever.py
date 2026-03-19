@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Iterable
 
@@ -12,6 +13,7 @@ from .models import BotEvidenceChunk
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+logger = logging.getLogger(__name__)
 
 
 class ConceptContentRetriever:
@@ -196,5 +198,6 @@ class ConceptContentRetriever:
             matrix = vectorizer.fit_transform(corpus)
             scores = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
             return [max(0.0, float(score)) for score in scores]
-        except Exception:
+        except ValueError:
+            logger.warning("Internal retrieval TF-IDF scoring failed.", exc_info=True)
             return [0.0 for _ in chunks]

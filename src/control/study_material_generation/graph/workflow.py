@@ -269,7 +269,7 @@ class MaterialWorkflow:
                     revision_feedback=item.get("revision_feedback"),
                     evidence_pack=item.get("evidence_pack"),
                 )
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 item["engine_output_error"] = str(exc)
                 logger.warning(
                     "[MaterialJob:%s] Study material engine failed for concept '%s': %s",
@@ -770,7 +770,7 @@ class MaterialWorkflow:
             try:
                 concept_pack = ConceptContentPack(**pack)
                 concept_pack_map[concept_pack.concept_id] = concept_pack
-            except Exception:
+            except (TypeError, ValueError):
                 continue
 
         latest_materials = await study_material_repository.get_latest_materials(concept_ids)
@@ -1042,7 +1042,7 @@ class MaterialWorkflow:
                 concept_copy = dict(concept)
                 node_timeout = max(self.settings.request_timeout_seconds * 2, 20)
                 return await asyncio.wait_for(task_callback(concept_copy), timeout=node_timeout)
-            except Exception as exc:
+            except (asyncio.TimeoutError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 last_exc = exc
                 if attempt < attempts:
                     await asyncio.sleep(min(2**(attempt - 1), 4))

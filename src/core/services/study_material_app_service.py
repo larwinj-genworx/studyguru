@@ -517,7 +517,7 @@ def _safe_remove_job_outputs(output_root: Path, output_dirs: list[str]) -> None:
             continue
         try:
             shutil.rmtree(target, ignore_errors=True)
-        except Exception as exc:
+        except OSError as exc:
             _logger.warning("Failed to remove output directory %s: %s", target, exc)
 
 

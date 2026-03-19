@@ -97,11 +97,11 @@ class LearningBotChatEngine:
                 recent_history=recent_history[-self.settings.learning_bot_history_limit :],
                 evidence_blocks=prompt_blocks,
             )
-        except Exception as exc:
-            logger.warning(
-                "[LearningBot] Falling back to deterministic response for concept='%s': %s",
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.error(
+                "[LearningBot] Falling back to deterministic response for concept='%s'.",
                 concept_name,
-                exc,
+                exc_info=True,
             )
             payload = self._build_fallback_response(
                 concept_name=concept_name,

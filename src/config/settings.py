@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application configuration loaded from environment variables."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -18,7 +20,12 @@ class Settings(BaseSettings):
 
     groq_api: str = Field(default="", validation_alias=AliasChoices("GROQ_API", "GROQ_API_KEY"))
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
+    groq_api_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="GROQ_API_BASE_URL")
     youtube_api_key: str = Field(default="", alias="YOUTUBE_API_KEY")
+    youtube_api_base_url: str = Field(
+        default="https://www.googleapis.com/youtube/v3",
+        alias="YOUTUBE_API_BASE_URL",
+    )
     enable_crewai_execution: bool = Field(default=False, alias="ENABLE_CREWAI_EXECUTION")
     enable_fallback_content: bool = Field(default=False, alias="ENABLE_FALLBACK_CONTENT")
     material_output_dir: Path = Field(
@@ -40,11 +47,19 @@ class Settings(BaseSettings):
     gcs_upload_workers: int = Field(default=8, alias="GCS_UPLOAD_WORKERS")
     max_parallel_concepts: int = Field(default=3, alias="MAX_PARALLEL_CONCEPTS")
     llm_max_concurrency: int = Field(default=1, alias="LLM_MAX_CONCURRENCY")
+    llm_cache_ttl_seconds: int = Field(default=300, alias="LLM_CACHE_TTL_SECONDS")
+    llm_cache_max_entries: int = Field(default=128, alias="LLM_CACHE_MAX_ENTRIES")
     agent_retry_attempts: int = Field(default=3, alias="AGENT_RETRY_ATTEMPTS")
     max_revision_cycles: int = Field(default=2, alias="MAX_REVISION_CYCLES")
     request_timeout_seconds: int = Field(default=30, alias="REQUEST_TIMEOUT_SECONDS")
+    llm_healthcheck_timeout_seconds: float = Field(
+        default=5.0,
+        alias="LLM_HEALTHCHECK_TIMEOUT_SECONDS",
+    )
     resource_search_timeout_seconds: int = Field(default=8, alias="RESOURCE_SEARCH_TIMEOUT_SECONDS")
     resource_validation_timeout_seconds: int = Field(default=4, alias="RESOURCE_VALIDATION_TIMEOUT_SECONDS")
+    resource_cache_ttl_seconds: int = Field(default=300, alias="RESOURCE_CACHE_TTL_SECONDS")
+    resource_cache_max_entries: int = Field(default=256, alias="RESOURCE_CACHE_MAX_ENTRIES")
     allow_resourceless_generation: bool = Field(default=True, alias="ALLOW_RESOURCELESS_GENERATION")
     evidence_search_results_per_query: int = Field(default=3, alias="EVIDENCE_SEARCH_RESULTS_PER_QUERY")
     evidence_max_sources: int = Field(default=6, alias="EVIDENCE_MAX_SOURCES")
@@ -58,12 +73,16 @@ class Settings(BaseSettings):
         alias="CONCEPT_VISUAL_SERVICE_URL",
     )
     concept_visual_service_token: str = Field(
-        default="studyguru-concept-visual-service",
+        default="",
         alias="CONCEPT_VISUAL_SERVICE_TOKEN",
     )
     concept_visual_request_timeout_seconds: int = Field(
         default=20,
         alias="CONCEPT_VISUAL_REQUEST_TIMEOUT_SECONDS",
+    )
+    concept_visual_local_output_dir: Path = Field(
+        default=Path("../StudyGuru_ConceptVisualBackend/output/concept_visuals"),
+        alias="CONCEPT_VISUAL_LOCAL_OUTPUT_DIR",
     )
     concept_image_max_candidates: int = Field(default=3, alias="CONCEPT_IMAGE_MAX_CANDIDATES")
     concept_image_min_width: int = Field(default=960, alias="CONCEPT_IMAGE_MIN_WIDTH")
@@ -86,8 +105,8 @@ class Settings(BaseSettings):
 
     postgres_url: str = Field(default="", alias="POSTGRES_URL")
     postgres_db: str = Field(default="postgres", alias="POSTGRES_DB")
-    postgres_user: str = Field(default="postgres", alias="POSTGRES_USER")
-    postgres_password: str = Field(default="postgres", alias="POSTGRES_PASSWORD")
+    postgres_user: str = Field(default="", alias="POSTGRES_USER")
+    postgres_password: str = Field(default="", alias="POSTGRES_PASSWORD")
     postgres_host: str = Field(default="localhost", alias="POSTGRES_HOST")
     postgres_port: int = Field(default=5432, alias="POSTGRES_PORT")
     postgres_instance_connection_name: str = Field(
@@ -101,7 +120,7 @@ class Settings(BaseSettings):
     jwt_exp_minutes: int = Field(default=60, alias="JWT_EXP_MINUTES")
     auth_cookie_name: str = Field(default="studyguru_access_token", alias="AUTH_COOKIE_NAME")
     auth_cookie_domain: str = Field(default="", alias="AUTH_COOKIE_DOMAIN")
-    auth_cookie_secure: bool = Field(default=False, alias="AUTH_COOKIE_SECURE")
+    auth_cookie_secure: bool = Field(default=True, alias="AUTH_COOKIE_SECURE")
     auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
         default="lax",
         alias="AUTH_COOKIE_SAMESITE",
@@ -109,6 +128,10 @@ class Settings(BaseSettings):
     cors_allow_origins_raw: str = Field(
         default="",
         alias="CORS_ALLOW_ORIGINS",
+    )
+    log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = Field(
+        default="INFO",
+        alias="LOG_LEVEL",
     )
 
     def ensure_output_dir(self) -> None:
@@ -146,6 +169,22 @@ class Settings(BaseSettings):
         if self.postgres_host.startswith("/cloudsql/"):
             return self.postgres_host
         return ""
+
+    @property
+    def groq_models_url(self) -> str:
+        return f"{self.groq_api_base_url.rstrip('/')}/models"
+
+    @property
+    def youtube_search_url(self) -> str:
+        return f"{self.youtube_api_base_url.rstrip('/')}/search"
+
+    @property
+    def youtube_videos_url(self) -> str:
+        return f"{self.youtube_api_base_url.rstrip('/')}/videos"
+
+    @property
+    def youtube_watch_base_url(self) -> str:
+        return "https://www.youtube.com/watch"
 
     def _build_cloudsql_socket_database_url(self, socket_host: str) -> str:
         username = quote(self.postgres_user, safe="")

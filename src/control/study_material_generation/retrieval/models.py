@@ -13,7 +13,7 @@ def utc_now_iso() -> str:
 def extract_domain(url: str) -> str:
     try:
         hostname = urlparse(url).hostname or ""
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return ""
     return hostname.lower().removeprefix("www.")
 

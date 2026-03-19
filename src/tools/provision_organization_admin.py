@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 
+from src.config.settings import get_settings
 from src.core.services import admin_user_app_service
+from src.core.logging import configure_logging
 from src.data.clients.postgres import init_db
 from src.schemas.auth import PlatformAdminProvisionRequest
+
+configure_logging(get_settings(), service_name="studyguru-admin-tool")
+logger = logging.getLogger(__name__)
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -17,11 +23,15 @@ async def _run(args: argparse.Namespace) -> None:
     )
     organization, admin = await admin_user_app_service.provision_organization_admin(payload)
 
-    print("Provisioned organization admin successfully.")
-    print(f"Organization ID: {organization.id}")
-    print(f"Organization Name: {organization.name}")
-    print(f"Admin User ID: {admin.id}")
-    print(f"Admin Email: {admin.email}")
+    logger.info(
+        "Provisioned organization admin successfully.",
+        extra={
+            "organization_id": organization.id,
+            "organization_name": organization.name,
+            "admin_user_id": admin.id,
+            "admin_email": admin.email,
+        },
+    )
 
 
 def main() -> None:

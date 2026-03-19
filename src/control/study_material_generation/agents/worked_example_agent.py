@@ -336,11 +336,11 @@ class WorkedExampleAgent(BaseStructuredAgent):
             return None
         try:
             return json.loads(text)
-        except Exception:
+        except json.JSONDecodeError:
             pass
         try:
             return ast.literal_eval(text)
-        except Exception:
+        except (SyntaxError, ValueError):
             return None
 
     @staticmethod

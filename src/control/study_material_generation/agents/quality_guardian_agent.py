@@ -145,7 +145,7 @@ class QualityGuardianAgent(BaseStructuredAgent):
             )
             llm_issues = self.to_list(llm_review.get("issues"), [])
             llm_guidance = self.to_list(llm_review.get("guidance"), [])
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             llm_guidance.append(f"Evidence review fallback used due to reviewer failure: {exc}")
 
         for issue in llm_issues:
@@ -266,9 +266,9 @@ class QualityGuardianAgent(BaseStructuredAgent):
             return None
         try:
             return json.loads(text)
-        except Exception:
+        except json.JSONDecodeError:
             pass
         try:
             return ast.literal_eval(text)
-        except Exception:
+        except (SyntaxError, ValueError):
             return None
