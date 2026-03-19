@@ -72,11 +72,21 @@ This starts:
 
 ### Option 2: Run the backend directly
 
-```bash
 cd Backend
-python3 -m venv .venv
+
+# Install uv (if not already installed)
+pip install uv
+
+# Create virtual environment
+uv venv
+
+# Activate virtual environment
 source .venv/bin/activate
-pip install -r requirements.txt
+
+# Install dependencies
+uv pip install -r requirements.txt
+
+# Run the FastAPI server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -156,14 +166,3 @@ Important note:
 
 - The concept-image flow currently works cleanly in local Docker Compose because services share the `studyguru_output` volume.
 - If you deploy both services independently on Cloud Run, do not rely on local filesystem sharing between services. Use durable shared storage for generated visual assets.
-
-## Verification
-
-Useful local checks:
-
-```bash
-python3 -m compileall src
-python3 -m pytest tests -q
-```
-
-If `pytest` is not installed in your environment, install it before running the suite.
