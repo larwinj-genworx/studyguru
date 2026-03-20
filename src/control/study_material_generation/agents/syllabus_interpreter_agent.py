@@ -32,16 +32,32 @@ class SyllabusInterpreterAgent(BaseStructuredAgent):
             max_chars_per_snippet=220,
         )
         prompt = (
+            "You are the syllabus interpretation stage in a production learning-content pipeline.\n"
+            "Your job is to convert a concept into a tightly scoped, grade-appropriate coverage map that downstream agents can trust.\n\n"
             f"Subject: {subject_name}\n"
             f"Grade Level: {grade_level}\n"
             f"Concept: {concept_name}\n"
             f"Concept Description: {concept_description or 'N/A'}\n"
             f"Learner Profile: {learner_profile or 'General classroom learner'}\n"
             f"Evidence Pack:\n{evidence_text}\n\n"
-            "Create a concise coverage map with keys: objectives (list), prerequisites (list), misconceptions (list). "
-            "Ground the output in the evidence pack when available. "
-            "Do not reject uncommon topics. If the topic is advanced or unusual for the grade, still create a simplified, teachable scope for this exact topic at this grade level. "
-            "Keep outputs simple, student-friendly, and fully tied to this concept only."
+            "Interpretation rules:\n"
+            "1. Stay strictly on this exact concept. Do not drift into the full chapter, neighboring topics, or broad subject summaries.\n"
+            "2. Use the evidence pack as the primary grounding source. If evidence is partial, keep the scope conservative and avoid unsupported specificity.\n"
+            "3. If the concept is advanced for the stated grade, do not reject it. Instead, define the simplest accurate and teachable version of the same concept for this grade.\n"
+            "4. Prioritize conceptual clarity, teachability, and classroom usefulness over encyclopedic completeness.\n"
+            "5. Write for downstream instructional design, not for the student directly. Each item should be specific enough to guide lesson generation.\n\n"
+            "What to produce:\n"
+            "- objectives: 4 to 6 precise learning outcomes for this concept only.\n"
+            "- prerequisites: 3 to 5 concrete prior ideas or skills students need before learning this concept.\n"
+            "- misconceptions: 4 to 6 realistic mistakes, confusions, or false beliefs students may have about this concept.\n\n"
+            "Quality requirements:\n"
+            "- Objectives must be observable and teachable, not vague goals like 'understand the topic'.\n"
+            "- Prerequisites must be truly necessary foundations, not generic study habits or broad subject labels.\n"
+            "- Misconceptions must reflect plausible learner confusion and must be distinct from one another.\n"
+            "- Keep every bullet concise, concept-specific, and grade-appropriate.\n"
+            "- Avoid repeating the concept name mechanically in every line.\n"
+            "- Avoid filler, generic pedagogy advice, and meta commentary.\n\n"
+            "Return strict JSON only with keys: objectives, prerequisites, misconceptions."
         )
         data = self.run_json_task(
             prompt,
