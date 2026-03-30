@@ -285,5 +285,4 @@ def _split_sql_statements(sql: str) -> list[str]:
     trailing_statement = "".join(current).strip()
     if trailing_statement:
         statements.append(trailing_statement)
-
     return statements
